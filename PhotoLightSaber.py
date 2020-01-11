@@ -24,22 +24,20 @@ import logging
 import enum
 import datetime
 from pathlib import Path
-from PIL.ExifTags import TAGS
 
-#TODO: import multiprocessing # use parallel processing
+# TODO: import multiprocessing # use parallel processing
 
 # was passiert wenn ein file schon im has ist aber geändert wurde. wie ist dann der löschen / umschreiben
 # Idee nicht umschreiben, da bei erneutem imort die datei wieder auftaucht.
 
-starttime = datetime.datetime.now()
-
-
 class Folders(enum.Enum):
     LOG = "log"
+    DATA = "data"
     HASH_LIB = "hash-lib"
     BY_CAMERA = "by-camera"
     BY_IMPORT = "by-import"
     BY_TIME = "by-time"
+
 
 class MetaInfo(enum.Enum):
     DATETIME_ORG = "DateTimeOriginal"
@@ -66,7 +64,7 @@ def hashfile(filename):
     return hash.hexdigest()
 
 
-def extensions(self):
+def extensions():
     #return ('.heic') # for testing
     return ('.ras', '.xwd', '.bmp', '.jpe', '.jpg', '.jpeg', '.xpm',
             '.ief', '.pbm', '.tif', '.gif', '.ppm', '.xbm',
@@ -83,8 +81,19 @@ def get_copy_cmd():
         return ["cp", "--reflink=auto"]
 
 
+def extract_date(exif):
+    if MetaInfo.DATETIME_CREATED.value in exif:
+        return exif[MetaInfo.DATETIME_CREATED.value]
+    elif MetaInfo.DATETIME_ORG.value in exif:
+        return exif[MetaInfo.DATETIME_ORG.value]
+    elif MetaInfo.DATETIME_GPS.value in exif:
+        return exif[MetaInfo.DATETIME_GPS.value]
+    else:
+        return exif[MetaInfo.DATETIME_FILE_MODIFY.value]
+
+
 class PhotoLightSaber:
-    def __init__(self, base_path, copy_cmd=None):
+    def __init__(self, base_path, copy_cmd=None, hardlink=True):
         self.base_path = base_path
 
         if copy_cmd is not None:
@@ -92,12 +101,14 @@ class PhotoLightSaber:
         else:
             self.copy_cmd = get_copy_cmd()
 
+        self.start_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 
-    def import_files(self, import_path):
-        for root, dirs, files in os.walk(import_path):
-            for file in files:
-                if file.endswith(".txt"):
-                    print(os.path.join(root, file))
+        if hardlink:
+            self.link_function = os.link
+        else:
+            self.link_function = os.symlink
+
+        self.bootstrap_directory_structure()
 
     def bootstrap_directory_structure(self):
         if not os.path.exists(self.base_path):
@@ -115,7 +126,7 @@ class PhotoLightSaber:
                 logging.info("Creating path: %s ", path)
                 os.mkdir(path)
 
-    def import_files2(self, import_path):
+    def import_files(self, import_path):
 
         count_imported = 0
         count_existed = 0
@@ -123,12 +134,14 @@ class PhotoLightSaber:
         for ext in extensions():
             for filename in Path(import_path).rglob('*' + ext):
                 if filename.is_file():
-                    print("reading file %s" % filename)
+                    print("Reading file %s" % filename)
                     newfile = self.copyfile(filename)
                     if newfile != "":
                         count_imported += 1
 
-                        self.extract_metadata2(newfile)
+                        self.extract_metadata(newfile)
+                        self.link_import(newfile, filename)
+
                     else:
                         count_existed += 1
         print("found files: %s, cloned files: %s, already existed: %s  "
@@ -160,14 +173,18 @@ class PhotoLightSaber:
             raise RuntimeError("failed %s" % cmd_str)
         return stdout  # return the content
 
-    def getHashFilename(self, filename):
+    def link_import(self, filename, import_file):
+        path = os.path.join(self.base_path, Folders.BY_IMPORT.value, self.start_time)
+        if not os.path.exists(path):
+            os.mkdir(path)
+        head, tail = os.path.split(import_file)
+        self.link_function(filename, os.path.join(path, tail))
+
+    def copyfile(self, filename):
         filehash = hashfile(filename)
-        file, fileext = os.path.splitext(filename)
-        return os.path.join(self.base_path, Folders.HASH_LIB.value, filehash[0:1], filehash + fileext)
+        file, ext = os.path.splitext(filename)
+        newfile = os.path.join(self.base_path, Folders.HASH_LIB.value, filehash[0:1], filehash + ext)
 
-
-    def copyfile(self, base_path, filename):
-        newfile = self.getHashFilename(filename)
         if not os.path.exists(newfile):
             args = self.copy_cmd + [str(filename), newfile]
             self.check_call(args)
@@ -175,18 +192,18 @@ class PhotoLightSaber:
         else:
             return ""
 
-    def link_datetime(self, base_path, filename, date_time_str):
+    def link_datetime(self, filename, date_time_str):
         if date_time_str is not None or date_time_str != "":
             # date_time = datetime.datetime.strptime(date_time_str, "%Y:%m:%d %H:%M:%S")
             root, ext = os.path.splitext(filename)
             head, tail = os.path.split(filename)
-            path = os.path.join(base_path, Folders.BY_TIME.value, date_time_str[0:4], date_time_str[5:7])
-            #print("create path: %s" % path)
+            path = os.path.join(self.base_path, Folders.BY_TIME.value, date_time_str[0:4], date_time_str[5:7])
             os.makedirs(path, exist_ok=True)
 
             link_name = os.path.join(path, date_time_str.replace(":", "-") + "_" + tail[0:8] + ext)
             if not os.path.exists(link_name):
-                os.symlink(filename, link_name) # os.link alternative
+                #os.symlink(filename, link_name) # os.link alternative
+                self.link_function(filename, link_name)
 
     def getexif(self, filename):
         args = ["exiftool", "-a", "-s", "-n", "-t", filename]
@@ -198,54 +215,9 @@ class PhotoLightSaber:
             exif[a] = b
         return exif
 
-    def extract_date(self, exif):
-        if MetaInfo.DATETIME_CREATED.value in exif:
-            return exif[MetaInfo.DATETIME_CREATED.value]
-        elif MetaInfo.DATETIME_ORG.value in exif:
-            return exif[MetaInfo.DATETIME_ORG.value]
-        elif MetaInfo.DATETIME_GPS.value in exif:
-            return exif[MetaInfo.DATETIME_GPS.value]
-        else:
-            return exif[MetaInfo.DATETIME_FILE_MODIFY.value]
-
-    def extract_metadata2(self, filename):
+    def extract_metadata(self, filename):
         exif = self.getexif(filename)
-        self.link_datetime(filename, self.extract_date(exif))
-
-    def extract_metadata(self, base_path, filename):
-        from PIL import Image, UnidentifiedImageError
-        try:
-
-            with Image.open(filename) as im:
-                exif = im.getexif()
-                if exif is not None:
-
-                    if 306 in exif:
-                        datetimestr = exif[306]
-                        print("DateTimeString: %s" % datetimestr)  # looks like 2016:08:15 10:18:47
-                        self.link_datetime(base_path, filename, datetimestr)
-                    else:
-                        labeled = self.get_labeled_exif(exif)
-
-
-                    #print("Camera: %s %s" %( exif[271], exif[272] ))
-
-                else:
-                    t = os.path.getmtime(filename)
-                    self.link_datetime(base_path, filename, datetime.datetime.strftime("%Y:%m:%d %H:%M:%S"))
-
-        except UnidentifiedImageError as err:
-            logging.info('unable to read image file', err)
-
-
-    def get_labeled_exif(self, exif):
-        labeled = {}
-        for (key, val) in exif.items():
-            labeled[TAGS.get(key)] = val
-            print("{0}.{1} -> {2} ".format(TAGS.get(key), key, val))
-
-        return labeled
-        # Interesting label - DateTimeOriginal, Make (271) and Model (272),
+        self.link_datetime(filename, extract_date(exif))
 
 
 def main(argv):
@@ -294,7 +266,7 @@ def main(argv):
     if pa.base_path is not None and pa.import_path is not None:
         photolisa = PhotoLightSaber(pa.base_path)
 
-        photolisa.import_files2(pa.base_path, pa.import_path)
+        photolisa.import_files(pa.import_path)
 
 
 if "__main__" == __name__:
