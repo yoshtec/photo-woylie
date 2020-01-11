@@ -2,11 +2,12 @@
 # -*- coding: utf-8 -*-
 
 """
-PhotoLightSaber (PLS) is a script for organizing your photos.
+PhotoWoylie (short woylie) is a script for organizing your photos.
 
-It is intended to be used with CoW File Systems like btrfs, xfs. PLS will try to use reflinks for importing the files.
+It is intended to be used with CoW File Systems like btrfs, xfs. Woylie will try to use reflinks for
+importing photos and movies.
+
 Leveraging reflinks it will allow for more space efficient storage of the duplicated files.
-
 
 Folders
  - hash-lib -- Folder for all files ordered after sha256 hash
@@ -14,6 +15,8 @@ Folders
  - by-camera -- Photos sorted after the camera model.
  - by-import -- Photos bz import run - contains the original file names
  - log -- Output for logfiles
+ - data -- general data needed by woylie
+
 
 """
 
@@ -27,8 +30,6 @@ from pathlib import Path
 
 # TODO: import multiprocessing # use parallel processing
 
-# was passiert wenn ein file schon im has ist aber geändert wurde. wie ist dann der löschen / umschreiben
-# Idee nicht umschreiben, da bei erneutem imort die datei wieder auftaucht.
 
 class Folders(enum.Enum):
     LOG = "log"
@@ -37,6 +38,7 @@ class Folders(enum.Enum):
     BY_CAMERA = "by-camera"
     BY_IMPORT = "by-import"
     BY_TIME = "by-time"
+    BY_COUNTRY = "by-country"
 
 
 class MetaInfo(enum.Enum):
@@ -92,7 +94,7 @@ def extract_date(exif):
         return exif[MetaInfo.DATETIME_FILE_MODIFY.value]
 
 
-class PhotoLightSaber:
+class PhotoWoylie:
     def __init__(self, base_path, copy_cmd=None, hardlink=True):
         self.base_path = base_path
 
@@ -128,6 +130,8 @@ class PhotoLightSaber:
 
     def import_files(self, import_path):
 
+        import_trace = open(os.path.join(self.base_path, Folders.LOG.value, "import-" + self.start_time + ".log"), "a")
+
         count_imported = 0
         count_existed = 0
 
@@ -135,26 +139,26 @@ class PhotoLightSaber:
             for filename in Path(import_path).rglob('*' + ext):
                 if filename.is_file():
                     print("Reading file %s" % filename)
+
                     newfile = self.copyfile(filename)
                     if newfile != "":
                         count_imported += 1
 
-                        self.extract_metadata(newfile)
+                        import_trace.write("%s -> %s" % (filename, newfile))
+
                         self.link_import(newfile, filename)
+                        self.link_exif_metadata(newfile)
 
                     else:
                         count_existed += 1
+
         print("found files: %s, cloned files: %s, already existed: %s  "
               % (count_imported+count_existed, count_imported, count_existed) )
         logging.info("found files: %s, cloned files: %s, already existed: %s  "
                      , count_imported+count_existed, count_imported, count_existed)
 
-    def check_call2(self, args, shell=False):
-        cmd_str = " ".join(args)
-        print(cmd_str)
-
-
-    def check_call(self, args, shell=False):
+    @staticmethod
+    def check_call(args, shell=False):
         cmd_str = " ".join(args)
         logging.info("Execute command: '%s' ", cmd_str)
         import subprocess
@@ -170,8 +174,8 @@ class PhotoLightSaber:
         if stderr:
             logging.debug(stderr)
         if p.returncode != 0:
-            raise RuntimeError("failed %s" % cmd_str)
-        return stdout  # return the content
+            raise RuntimeError("failed to run '%s'" % cmd_str)
+        return stdout
 
     def link_import(self, filename, import_file):
         path = os.path.join(self.base_path, Folders.BY_IMPORT.value, self.start_time)
@@ -205,18 +209,18 @@ class PhotoLightSaber:
                 #os.symlink(filename, link_name) # os.link alternative
                 self.link_function(filename, link_name)
 
-    def getexif(self, filename):
+    def get_exif(self, filename):
         args = ["exiftool", "-a", "-s", "-n", "-t", filename]
         mstring = self.check_call(args)
         exif = {}
         for line in mstring.splitlines():
             a, b = line.split('\t', 1)
-            print("a,b -> %s, %s" % (a, b))
+            #print("a,b -> %s, %s" % (a, b))
             exif[a] = b
         return exif
 
-    def extract_metadata(self, filename):
-        exif = self.getexif(filename)
+    def link_exif_metadata(self, filename):
+        exif = self.get_exif(filename)
         self.link_datetime(filename, extract_date(exif))
 
 
@@ -224,21 +228,21 @@ def main(argv):
     import argparse
 
     parser = argparse.ArgumentParser(
-        description='this is the PhotoLightSaber tool')
+        description='this is the PhotoWoylie tool')
 
     parser.add_argument(
         '--base-path', '-p',
         metavar='PATH',
         dest='base_path',
         required=True,
-        help='Target PhotoLightSaber base path')
+        help='PhotoWoylie base path')
 
     parser.add_argument(
         '--import-path', '-i',
         metavar='PATH',
         dest='import_path',
         required=True,
-        help='Add the Pictures to the PhotoLightSaber base Path.'
+        help='Add the Pictures to the PhotoWoylie base Path.'
              'Pictures will only be physically copied if across filesystem '
              'or on non reflink possible fs')
 
@@ -264,9 +268,9 @@ def main(argv):
         return 0
 
     if pa.base_path is not None and pa.import_path is not None:
-        photolisa = PhotoLightSaber(pa.base_path)
+        woylie = PhotoWoylie(pa.base_path)
 
-        photolisa.import_files(pa.import_path)
+        woylie.import_files(pa.import_path)
 
 
 if "__main__" == __name__:
