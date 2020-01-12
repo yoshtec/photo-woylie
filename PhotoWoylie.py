@@ -4,16 +4,26 @@
 """
 PhotoWoylie (short woylie) is a script for organizing your photos.
 
-It is intended to be used with CoW File Systems like btrfs, xfs. Woylie will try to use reflinks for
+It is intended to be used with CoW File Systems like btrfs, xfs, apfs. Woylie will try to use reflinks for
 importing photos and movies.
 
-Leveraging reflinks it will allow for more space efficient storage of the duplicated files.
+Rationale:
+Leveraging reflinks it will allow for more space efficient storage of the duplicated files. Most users have already
+stored Photos on the disk in several locations. Often unable to identify which files have already been imported,
+copied, sorted or the like. Woylie will import all files to the hash-lib where files are stored by their hash digest.
+duplicate files will thus not be imported, even if they are from different locations (as long as the content hasn't
+been changed.
+
+Name Origin:
+'The woylie or brush-tailed bettong (Bettongia penicillata) is an extremely rare, small marsupial, belonging to the
+genus Bettongia, that is endemic to Australia.' https://en.wikipedia.org/wiki/Woylie
+
 
 Folders
  - hash-lib -- Folder for all files ordered after sha256 hash
  - by-time -- Photos linked after the Year and time
  - by-camera -- Photos sorted after the camera model.
- - by-import -- Photos bz import run - contains the original file names
+ - by-import -- Photos by import run - contains the original file names
  - log -- Output for logfiles
  - data -- general data needed by woylie
 
@@ -144,7 +154,7 @@ class PhotoWoylie:
                     if newfile != "":
                         count_imported += 1
 
-                        import_trace.write("%s -> %s" % (filename, newfile))
+                        import_trace.write("%s\t%s\n" % (os.path.abspath(filename), newfile))
 
                         self.link_import(newfile, filename)
                         self.link_exif_metadata(newfile)
@@ -209,7 +219,7 @@ class PhotoWoylie:
                 #os.symlink(filename, link_name) # os.link alternative
                 self.link_function(filename, link_name)
 
-    def get_exif(self, filename):
+    def get_exif2(self, filename):
         args = ["exiftool", "-a", "-s", "-n", "-t", filename]
         mstring = self.check_call(args)
         exif = {}
@@ -217,6 +227,13 @@ class PhotoWoylie:
             a, b = line.split('\t', 1)
             #print("a,b -> %s, %s" % (a, b))
             exif[a] = b
+        return exif
+
+    def get_exif(self, filename):
+        import json
+        args = ["exiftool", "-json", "-n", filename]
+        mstring = self.check_call(args)
+        exif = json.loads(mstring)[0]
         return exif
 
     def link_exif_metadata(self, filename):
