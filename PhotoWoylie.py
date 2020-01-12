@@ -14,10 +14,6 @@ copied, sorted or the like. Woylie will import all files to the hash-lib where f
 duplicate files will thus not be imported, even if they are from different locations (as long as the content hasn't
 been changed.
 
-Name Origin:
-'The woylie or brush-tailed bettong (Bettongia penicillata) is an extremely rare, small marsupial, belonging to the
-genus Bettongia, that is endemic to Australia.' https://en.wikipedia.org/wiki/Woylie
-
 
 Folders
  - hash-lib -- Folder for all files ordered after sha256 hash
@@ -36,6 +32,7 @@ import os.path
 import logging
 import enum
 import datetime
+import json
 from pathlib import Path
 
 # TODO: import multiprocessing # use parallel processing
@@ -105,7 +102,7 @@ def extract_date(exif):
 
 
 class PhotoWoylie:
-    def __init__(self, base_path, copy_cmd=None, hardlink=True):
+    def __init__(self, base_path, copy_cmd=None, hardlink=True, dump_exif=False):
         self.base_path = base_path
 
         if copy_cmd is not None:
@@ -114,6 +111,10 @@ class PhotoWoylie:
             self.copy_cmd = get_copy_cmd()
 
         self.start_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+
+        if dump_exif:
+            self.exif_dump = []
+        self.dump_exif = dump_exif
 
         if hardlink:
             self.link_function = os.link
@@ -148,24 +149,34 @@ class PhotoWoylie:
         for ext in extensions():
             for filename in Path(import_path).rglob('*' + ext):
                 if filename.is_file():
-                    print("Reading file %s" % filename)
+                    print("Reading file %s" % filename, end=' ')
+                    try:
+                        newfile = self.copyfile(filename)
+                        if newfile != "":
+                            count_imported += 1
 
-                    newfile = self.copyfile(filename)
-                    if newfile != "":
-                        count_imported += 1
+                            import_trace.write("%s\t%s\n" % (os.path.abspath(filename), newfile))
 
-                        import_trace.write("%s\t%s\n" % (os.path.abspath(filename), newfile))
+                            self.link_import(newfile, filename)
+                            self.link_exif_metadata(newfile)
 
-                        self.link_import(newfile, filename)
-                        self.link_exif_metadata(newfile)
+                            print("✅  Imported")
 
-                    else:
-                        count_existed += 1
+                        else:
+                            print("♻️  Existed")
+                            count_existed += 1
+                    except Exception:
+                        print("❌  Error")
+                        raise
 
         print("found files: %s, cloned files: %s, already existed: %s  "
               % (count_imported+count_existed, count_imported, count_existed) )
         logging.info("found files: %s, cloned files: %s, already existed: %s  "
                      , count_imported+count_existed, count_imported, count_existed)
+
+        if self.dump_exif:
+            json_file = open(os.path.join(self.base_path, Folders.LOG.value, "exif-" + self.start_time + ".json"), "a")
+            json.dump(self.exif_dump, json_file)
 
     @staticmethod
     def check_call(args, shell=False):
@@ -216,24 +227,14 @@ class PhotoWoylie:
 
             link_name = os.path.join(path, date_time_str.replace(":", "-") + "_" + tail[0:8] + ext)
             if not os.path.exists(link_name):
-                #os.symlink(filename, link_name) # os.link alternative
                 self.link_function(filename, link_name)
 
-    def get_exif2(self, filename):
-        args = ["exiftool", "-a", "-s", "-n", "-t", filename]
-        mstring = self.check_call(args)
-        exif = {}
-        for line in mstring.splitlines():
-            a, b = line.split('\t', 1)
-            #print("a,b -> %s, %s" % (a, b))
-            exif[a] = b
-        return exif
-
     def get_exif(self, filename):
-        import json
         args = ["exiftool", "-json", "-n", filename]
         mstring = self.check_call(args)
         exif = json.loads(mstring)[0]
+        if self.dump_exif:
+            self.exif_dump.append(exif)
         return exif
 
     def link_exif_metadata(self, filename):
@@ -270,8 +271,21 @@ def main(argv):
 
     parser.add_argument(
         '--verbose', '-v',
-        help='Verbose output',
+        help='verbose output',
         action='store_true')
+
+    parser.add_argument(
+        '--dump-exif',
+        dest='dump_exif',
+        help='safe exif information per import into the log directory',
+        action='store_true')
+
+    parser.add_argument(
+        '--use-symlinks',
+        dest='symlink',
+        help='use symlinks instead of hardlinks for linking the pictures in the by-xyz folders',
+        action='store_true'
+    )
 
     pa = parser.parse_args(argv[1:])
 
@@ -284,10 +298,15 @@ def main(argv):
         sys.stdout.write(__doc__)
         return 0
 
-    if pa.base_path is not None and pa.import_path is not None:
-        woylie = PhotoWoylie(pa.base_path)
+    if pa.base_path is not None:
+        woylie = PhotoWoylie(
+            base_path=pa.base_path,
+            hardlink=(pa.symlink is None),
+            dump_exif=(pa.dump_exif is not None)
+        )
 
-        woylie.import_files(pa.import_path)
+        if pa.import_path is not None:
+            woylie.import_files(pa.import_path)
 
 
 if "__main__" == __name__:
