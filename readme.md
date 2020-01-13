@@ -13,6 +13,9 @@ copied, sorted or the like. Woylie will import all files to the hash-lib where f
 duplicate files will thus not be imported, even if they are from different locations (as long as the content hasn't
 been changed.
 
+Exposing the Files again as via various folders makes it possible for any program to find and leverage the power of metadata
+
+
 ## Name Origin:
 
 > The woylie or brush-tailed bettong (Bettongia penicillata) is an extremely rare, small marsupial, belonging to the
@@ -34,6 +37,7 @@ brew install exiftool
 or on your linux distribution via your preferred package manager. 
 
 ## Folder Structure
+
 
 Folders
  - `hash-lib` -- Folder for all files ordered after sha256 hash

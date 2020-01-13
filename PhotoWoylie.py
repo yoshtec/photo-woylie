@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: MIT
 
 """
 PhotoWoylie (short woylie) is a script for organizing your photos.
@@ -33,6 +34,7 @@ import logging
 import enum
 import datetime
 import json
+import requests
 from pathlib import Path
 
 # TODO: import multiprocessing # use parallel processing
@@ -85,7 +87,8 @@ def get_copy_cmd():
     if platform.system() == "Darwin":
         return ["cp", "-c"]
     elif platform.system() == "Windows":
-        return [""] # Windows Use Junctions or Links?
+        print("WARN: Windows Support currently not implemented")
+        return ["copy"] # Windows Use Junctions or Links?
     else:
         return ["cp", "--reflink=auto"]
 
@@ -100,6 +103,41 @@ def extract_date(exif):
     else:
         return exif[MetaInfo.DATETIME_FILE_MODIFY.value]
 
+class OSMResolver:
+
+
+    def __init__(self, file_name):
+        if file_name is not None and file_name.trim != "":
+            file = open(file_name, 'r')
+            self.cache = json.load(file)
+        else:
+            self.cache = {}
+
+    def resolve_cache(self, lat, lon):
+        for key, val in self.cache.items():
+            print(key, val)
+
+            # TODO: this could be a lot smarter
+            return None
+
+    def resolve(self, lat, lon, mail):
+        if lat is not None and lon is not None:
+            # https://operations.osmfoundation.org/policies/nominatim/
+            js = self.resolve_cache(lat, lon)
+
+            if js is None:
+                url = 'https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=12&lat=%s&lon=%s' % (lat, lon)
+                r = requests.get(url)
+
+                if r.status_code == 200:
+                    js = r.json()
+                    self.cache.append(js)
+
+            return js
+
+    def cache_write(self, file_name):
+        file = open(file_name, "a")
+        json.dump(self.cache, file, indent=4)
 
 class PhotoWoylie:
     def __init__(self, base_path, copy_cmd=None, hardlink=True, dump_exif=False):
@@ -176,7 +214,7 @@ class PhotoWoylie:
 
         if self.dump_exif:
             json_file = open(os.path.join(self.base_path, Folders.LOG.value, "exif-" + self.start_time + ".json"), "a")
-            json.dump(self.exif_dump, json_file)
+            json.dump(self.exif_dump, json_file, indent=4)
 
     @staticmethod
     def check_call(args, shell=False):
@@ -240,6 +278,26 @@ class PhotoWoylie:
     def link_exif_metadata(self, filename):
         exif = self.get_exif(filename)
         self.link_datetime(filename, extract_date(exif))
+
+    def link_gps(self, exif):
+
+        lat = None
+        lon = None
+        if "GPSLatitude" in exif and "GPSLongitude" in exif:
+            lat = exif["GPSLatitude"]
+            lon = exif["GPSLongitude"]
+        elif "GPSPosition" in exif:
+            gpspos = exif["GPSPosition"].split()
+            lat = gpspos[0]
+            lon = gpspos[1]
+
+        if lat is not None and lon is not None:
+            # https://operations.osmfoundation.org/policies/nominatim/
+            url = 'https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=%s&lon=%s' % (lat, lon)
+            r = requests.get(url)
+
+            if r.status_code == 200:
+                r.json()
 
 
 def main(argv):
