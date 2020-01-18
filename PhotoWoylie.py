@@ -47,7 +47,7 @@ class Folders(enum.Enum):
     BY_CAMERA = "by-camera"
     BY_IMPORT = "by-import"
     BY_TIME = "by-time"
-    BY_COUNTRY = "by-country"
+    BY_LOCATION = "by-location"
 
 
 class MetaInfo(enum.Enum):
@@ -74,6 +74,25 @@ def hashfile(filename):
             hash.update(data)
     return hash.hexdigest()
 
+
+def check_call(args, shell=False):
+    cmd_str = " ".join(args)
+    logging.info("Execute command: '%s' ", cmd_str)
+    import subprocess
+    p = subprocess.Popen(
+        args,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        shell=shell,
+        text=True)
+    stdout, stderr = p.communicate()
+    if stdout:
+        logging.debug(stdout)
+    if stderr:
+        logging.debug(stderr)
+    if p.returncode != 0:
+        raise RuntimeError("failed to run '%s'" % cmd_str)
+    return stdout
 
 def extensions():
     #return ('.heic') # for testing
@@ -103,30 +122,46 @@ def extract_date(exif):
     else:
         return exif[MetaInfo.DATETIME_FILE_MODIFY.value]
 
-class OSMResolver:
 
+class OSMResolver:
+    URL = 'https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=12&lat=%s&lon=%s'
 
     def __init__(self, file_name):
-        if file_name is not None and file_name.trim != "":
+        print("Geo data provided by OpenStreetmap:")
+        print("-|> © OpenStreetMap contributors")
+        print("-|> url: https://www.openstreetmap.org/copyright")
+
+        self.file_name = file_name
+        if file_name is not None and os.path.exists(file_name):
             file = open(file_name, 'r')
             self.cache = json.load(file)
+            file.close()
         else:
-            self.cache = {}
+            self.cache = []
 
-    def resolve_cache(self, lat, lon):
-        for key, val in self.cache.items():
-            print(key, val)
+    def _resolve_cache(self, lat, lon):
 
-            # TODO: this could be a lot smarter
-            return None
+        # TODO: this could be a lot smarter
+        for item in self.cache:
 
-    def resolve(self, lat, lon, mail):
+            x = item['boundingbox']
+            # print("lat, lon, array", lat, lon, x)
+            # 'boundingbox': ['28.4793827', '28.6129197', '77.2054109', '77.346601']
+            # south Latitude, north Latitude, west Longitude, east Longitude
+
+            if float(x[0]) < float(lat) < float(x[1]) and float(x[2]) < float(lon) < float(x[3]):
+                return item
+
+        return None
+
+    def resolve(self, lat, lon):
         if lat is not None and lon is not None:
             # https://operations.osmfoundation.org/policies/nominatim/
-            js = self.resolve_cache(lat, lon)
+            js = self._resolve_cache(lat, lon)
 
+            # Cache miss
             if js is None:
-                url = 'https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=12&lat=%s&lon=%s' % (lat, lon)
+                url = self.URL % (lat, lon)
                 r = requests.get(url)
 
                 if r.status_code == 200:
@@ -135,18 +170,40 @@ class OSMResolver:
 
             return js
 
-    def cache_write(self, file_name):
-        file = open(file_name, "a")
+    def resolve_name(self, lat, lon):
+        osmjs = self.resolve(lat, lon)
+        #print(osmjs)
+
+        if osmjs:
+            if 'address' in osmjs and 'country' in osmjs['address']:
+                if 'city' in osmjs['address']:
+                    return os.path.join(osmjs['address']['country'], osmjs['address']['city'])
+                elif 'town' in osmjs['address']:
+                    return os.path.join(osmjs['address']['country'], osmjs['address']['town'])
+                elif 'state' in osmjs['address']:
+                    return os.path.join(osmjs['address']['country'], osmjs['address']['state'])
+                elif 'county' in osmjs:
+                    return os.path.join(osmjs['address']['country'], osmjs['address']['county'])
+                else:
+                    os.path.join(osmjs['address']['country'])
+            elif 'display_name' in osmjs:
+                return os.path.join(osmjs['display_name'])
+
+        print(osmjs)
+        return os.path.join("Unknown")
+
+    def cache_write(self):
+        file = open(self.file_name, "w")
         json.dump(self.cache, file, indent=4)
+        file.close()
+
 
 class PhotoWoylie:
+
     def __init__(self, base_path, copy_cmd=None, hardlink=True, dump_exif=False):
         self.base_path = base_path
 
-        if copy_cmd is not None:
-            self.copy_cmd = copy_cmd
-        else:
-            self.copy_cmd = get_copy_cmd()
+        self.copy_cmd = copy_cmd if copy_cmd else get_copy_cmd()
 
         self.start_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 
@@ -154,12 +211,11 @@ class PhotoWoylie:
             self.exif_dump = []
         self.dump_exif = dump_exif
 
-        if hardlink:
-            self.link_function = os.link
-        else:
-            self.link_function = os.symlink
+        self.hardlink = hardlink
 
         self.bootstrap_directory_structure()
+
+        self.osm = OSMResolver(os.path.join(self.base_path, Folders.DATA.value, "osm-cache.json"))
 
     def bootstrap_directory_structure(self):
         if not os.path.exists(self.base_path):
@@ -177,6 +233,7 @@ class PhotoWoylie:
                 logging.info("Creating path: %s ", path)
                 os.mkdir(path)
 
+
     def import_files(self, import_path):
 
         import_trace = open(os.path.join(self.base_path, Folders.LOG.value, "import-" + self.start_time + ".log"), "a")
@@ -189,20 +246,30 @@ class PhotoWoylie:
                 if filename.is_file():
                     print("Reading file %s" % filename, end=' ')
                     try:
-                        newfile = self.copyfile(filename)
-                        if newfile != "":
+                        fi = self.FileImporter(
+                            self.base_path, filename,
+                            copy_cmd=self.copy_cmd,
+                            start_time=self.start_time,
+                            hardlink=self.hardlink)
+
+                        if fi.imported:
                             count_imported += 1
 
-                            import_trace.write("%s\t%s\n" % (os.path.abspath(filename), newfile))
+                            import_trace.write("%s\t%s\n" % (os.path.abspath(filename), fi.full_path))
 
-                            self.link_import(newfile, filename)
-                            self.link_exif_metadata(newfile)
+                            fi.link_import()
+                            fi.link_gps(self.osm)
+                            fi.link_datetime()
+                            fi.link_camera()
 
-                            print("✅  Imported")
+                            if self.dump_exif:
+                                self.exif_dump.append(fi.get_exif())
+
+                            print("✅  Imported: ", fi.flags)
 
                         else:
-                            print("♻️  Existed")
                             count_existed += 1
+                            print("♻️  Existed ")
                     except Exception:
                         print("❌  Error")
                         raise
@@ -216,89 +283,95 @@ class PhotoWoylie:
             json_file = open(os.path.join(self.base_path, Folders.LOG.value, "exif-" + self.start_time + ".json"), "a")
             json.dump(self.exif_dump, json_file, indent=4)
 
-    @staticmethod
-    def check_call(args, shell=False):
-        cmd_str = " ".join(args)
-        logging.info("Execute command: '%s' ", cmd_str)
-        import subprocess
-        p = subprocess.Popen(
-            args,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            shell=shell,
-            text=True)
-        stdout, stderr = p.communicate()
-        if stdout:
-            logging.debug(stdout)
-        if stderr:
-            logging.debug(stderr)
-        if p.returncode != 0:
-            raise RuntimeError("failed to run '%s'" % cmd_str)
-        return stdout
+        self.osm.cache_write()
 
-    def link_import(self, filename, import_file):
-        path = os.path.join(self.base_path, Folders.BY_IMPORT.value, self.start_time)
-        if not os.path.exists(path):
-            os.mkdir(path)
-        head, tail = os.path.split(import_file)
-        self.link_function(filename, os.path.join(path, tail))
+    class FileImporter:
 
-    def copyfile(self, filename):
-        filehash = hashfile(filename)
-        file, ext = os.path.splitext(filename)
-        newfile = os.path.join(self.base_path, Folders.HASH_LIB.value, filehash[0:1], filehash + ext)
+        def __init__(self, base_path, filename, copy_cmd, start_time, hardlink=True):
+            self.flags = []
 
-        if not os.path.exists(newfile):
-            args = self.copy_cmd + [str(filename), newfile]
-            self.check_call(args)
-            return newfile
-        else:
-            return ""
+            self.base_path = base_path
+            self.start_time = start_time
 
-    def link_datetime(self, filename, date_time_str):
-        if date_time_str is not None or date_time_str != "":
-            # date_time = datetime.datetime.strptime(date_time_str, "%Y:%m:%d %H:%M:%S")
-            root, ext = os.path.splitext(filename)
-            head, tail = os.path.split(filename)
-            path = os.path.join(self.base_path, Folders.BY_TIME.value, date_time_str[0:4], date_time_str[5:7])
+            self.old_file_path = filename
+            head, self.old_file_name = os.path.split(filename)
+            file, self.ext = os.path.splitext(filename)
+            self.file_hash = hashfile(filename)
+
+            self.link_function = os.link if hardlink else os.symlink
+            self.copy_cmd = copy_cmd if copy_cmd else get_copy_cmd()
+
+            self.full_path = os.path.abspath(
+                os.path.join(
+                    self.base_path, Folders.HASH_LIB.value, self.file_hash[0:1], self.file_hash + self.ext
+                )
+            )
+
+            if not os.path.exists(self.full_path):
+                check_call(self.copy_cmd + [str(self.old_file_path), self.full_path])
+
+                self.flags.append("#")
+                mstring = check_call(["exiftool", "-json", "-n", self.full_path])
+                self.exif = json.loads(mstring)[0]
+                self.datetime_filename = \
+                    extract_date(self.exif).replace(":", "-").replace(" ", "_") + "_" + self.file_hash[0:8] + self.ext
+
+                self.imported = True
+            else:
+                self.imported = False
+
+        def link_import(self):
+            path = os.path.join(self.base_path, Folders.BY_IMPORT.value, self.start_time)
             os.makedirs(path, exist_ok=True)
+            self.link_function(self.full_path, os.path.join(path, self.old_file_name))
+            self.flags.append("💾")
 
-            link_name = os.path.join(path, date_time_str.replace(":", "-") + "_" + tail[0:8] + ext)
-            if not os.path.exists(link_name):
-                self.link_function(filename, link_name)
+        def link_datetime(self):
+            path = os.path.join(
+                self.base_path, Folders.BY_TIME.value, self.datetime_filename[0:4], self.datetime_filename[5:7])
+            os.makedirs(path, exist_ok=True)
+            self.link_function(self.full_path, os.path.join(path, self.datetime_filename))
+            self.flags.append("🕘")
 
-    def get_exif(self, filename):
-        args = ["exiftool", "-json", "-n", filename]
-        mstring = self.check_call(args)
-        exif = json.loads(mstring)[0]
-        if self.dump_exif:
-            self.exif_dump.append(exif)
-        return exif
+        def get_exif(self):
+            return self.exif
 
-    def link_exif_metadata(self, filename):
-        exif = self.get_exif(filename)
-        self.link_datetime(filename, extract_date(exif))
+        def link_gps(self, osm: OSMResolver):
+            lat = None
+            lon = None
+            if "GPSLatitude" in self.exif and "GPSLongitude" in self.exif:
+                lat = self.exif["GPSLatitude"]
+                lon = self.exif["GPSLongitude"]
+            elif "GPSPosition" in self.exif:
+                gpspos = self.exif["GPSPosition"].split()
+                lat = gpspos[0]
+                lon = gpspos[1]
 
-    def link_gps(self, exif):
+            if lat is not None and lon is not None:
+                osmpath = osm.resolve_name(lat, lon)
+                path = os.path.join(self.base_path, Folders.BY_LOCATION.value, osmpath)
+                os.makedirs(path, exist_ok=True)
+                self.link_function(self.full_path, os.path.join(path, self.datetime_filename))
+                self.flags.append("🌍")
 
-        lat = None
-        lon = None
-        if "GPSLatitude" in exif and "GPSLongitude" in exif:
-            lat = exif["GPSLatitude"]
-            lon = exif["GPSLongitude"]
-        elif "GPSPosition" in exif:
-            gpspos = exif["GPSPosition"].split()
-            lat = gpspos[0]
-            lon = gpspos[1]
+        def link_camera(self):
+            name = ""
 
-        if lat is not None and lon is not None:
-            # https://operations.osmfoundation.org/policies/nominatim/
-            url = 'https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=%s&lon=%s' % (lat, lon)
-            r = requests.get(url)
+            if 'Comment' in self.exif and self.exif['Comment'] == "Screenshot":
+                name = "Screenshot"
 
-            if r.status_code == 200:
-                r.json()
+            if 'Make' in self.exif:
+                name = self.exif['Make']
 
+            if 'Model' in self.exif:
+                name += " " + self.exif['Model']
+
+            print(name)
+            if name != "":
+                path = os.path.join(self.base_path, Folders.BY_CAMERA.value, name)
+                os.makedirs(path, exist_ok=True)
+                self.link_function(self.full_path, os.path.join(path, self.datetime_filename))
+                self.flags.append("📸")
 
 def main(argv):
     import argparse
