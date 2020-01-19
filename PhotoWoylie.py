@@ -99,7 +99,7 @@ def extensions():
     exts = ['.ras', '.xwd', '.bmp', '.jpe', '.jpg', '.jpeg', '.xpm',
             '.ief', '.pbm', '.tif', '.tiff', '.gif', '.ppm', '.xbm',
              '.rgb', '.pgm', '.png', '.pnm', '.heic', '.heif']
-    return exts + [x.upper for x in exts]
+    return exts + [x.upper() for x in exts]
 
 
 IGNORE_PATH = ['.AppleDouble', '.git']
@@ -271,7 +271,7 @@ class PhotoWoylie:
                 self.count_existed += 1
                 import_trace.write("\t♻️ Existed\n")
                 print("♻️  Existed ")
-        except RuntimeError as e:
+        except (RuntimeError, PermissionError) as e:
             import_trace.write("❌ERROR %s\n\n" % e)
             print("❌  Error")
         except Exception as e:
