@@ -94,11 +94,12 @@ def check_call(args, shell=False, ignore_return_code=False):
         raise RuntimeError("failed to run '%s'" % cmd_str)
     return stdout
 
+
 def extensions():
-    #return ('.heic') # for testing
-    return ('.ras', '.xwd', '.bmp', '.jpe', '.jpg', '.jpeg', '.xpm',
-            '.ief', '.pbm', '.tif', '.gif', '.ppm', '.xbm',
-            '.tiff', '.rgb', '.pgm', '.png', '.pnm', '.heic', '.heif')
+    exts = ['.ras', '.xwd', '.bmp', '.jpe', '.jpg', '.jpeg', '.xpm',
+            '.ief', '.pbm', '.tif', '.tiff', '.gif', '.ppm', '.xbm',
+             '.rgb', '.pgm', '.png', '.pnm', '.heic', '.heif']
+    return exts + [x.upper for x in exts]
 
 
 IGNORE_PATH = ['.AppleDouble', '.git']
@@ -270,6 +271,9 @@ class PhotoWoylie:
                 self.count_existed += 1
                 import_trace.write("\t♻️ Existed\n")
                 print("♻️  Existed ")
+        except RuntimeError as e:
+            import_trace.write("❌ERROR %s\n\n" % e)
+            print("❌  Error")
         except Exception as e:
             import_trace.write("❌ERROR %s\n\n" % e)
             print("❌  Error")
@@ -291,6 +295,7 @@ class PhotoWoylie:
         except Exception:
             raise
         finally:
+            print("-->")
             print("found files: %s, cloned files: %s, already existed: %s  "
                   % (self.count_imported + self.count_existed, self.count_imported, self.count_existed) )
             logging.info("found files: %s, cloned files: %s, already existed: %s  "
@@ -303,9 +308,7 @@ class PhotoWoylie:
 
             self.osm.cache_write()
 
-
     class FileImporter:
-
         def __init__(self, base_path, filename, copy_cmd, start_time, hardlink=True):
             self.flags = []
 
@@ -315,6 +318,7 @@ class PhotoWoylie:
             self.old_file_path = filename
             head, self.old_file_name = os.path.split(filename)
             file, self.ext = os.path.splitext(filename)
+            self.ext = self.ext.lower()  # make the extension lowercase for consistency
             self.file_hash = hashfile(filename)
 
             self.link_function = os.link if hardlink else os.symlink
