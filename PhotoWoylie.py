@@ -75,7 +75,7 @@ def hashfile(filename):
     return hash.hexdigest()
 
 
-def check_call(args, shell=False):
+def check_call(args, shell=False, ignore_return_code=False):
     cmd_str = " ".join(args)
     logging.info("Execute command: '%s' ", cmd_str)
     import subprocess
@@ -90,7 +90,7 @@ def check_call(args, shell=False):
         logging.debug(stdout)
     if stderr:
         logging.debug(stderr)
-    if p.returncode != 0:
+    if not ignore_return_code and p.returncode != 0:
         raise RuntimeError("failed to run '%s'" % cmd_str)
     return stdout
 
@@ -99,6 +99,9 @@ def extensions():
     return ('.ras', '.xwd', '.bmp', '.jpe', '.jpg', '.jpeg', '.xpm',
             '.ief', '.pbm', '.tif', '.gif', '.ppm', '.xbm',
             '.tiff', '.rgb', '.pgm', '.png', '.pnm', '.heic', '.heif')
+
+
+IGNORE_PATH = ['.AppleDouble', '.git']
 
 
 def get_copy_cmd():
@@ -182,7 +185,7 @@ class OSMResolver:
                     return os.path.join(osmjs['address']['country'], osmjs['address']['town'])
                 elif 'state' in osmjs['address']:
                     return os.path.join(osmjs['address']['country'], osmjs['address']['state'])
-                elif 'county' in osmjs:
+                elif 'county' in osmjs['address']:
                     return os.path.join(osmjs['address']['country'], osmjs['address']['county'])
                 else:
                     os.path.join(osmjs['address']['country'])
@@ -211,6 +214,9 @@ class PhotoWoylie:
             self.exif_dump = []
         self.dump_exif = dump_exif
 
+        self.count_imported = 0
+        self.count_existed = 0
+
         self.hardlink = hardlink
 
         self.bootstrap_directory_structure()
@@ -233,57 +239,70 @@ class PhotoWoylie:
                 logging.info("Creating path: %s ", path)
                 os.mkdir(path)
 
+    def import_file(self, filename, import_trace):
+        try:
+            print("Reading file %s" % filename, end=' ')
+            import_trace.write("%s\t" % os.path.abspath(filename))
 
-    def import_files(self, import_path):
+            fi = self.FileImporter(
+                self.base_path, filename,
+                copy_cmd=self.copy_cmd,
+                start_time=self.start_time,
+                hardlink=self.hardlink)
 
+            if fi.imported:
+                self.count_imported += 1
+
+                import_trace.write("%s\t" % fi.full_path)
+
+                fi.link_import()
+                fi.link_datetime()
+                fi.link_camera()
+                fi.link_gps(self.osm)
+
+                if self.dump_exif:
+                    self.exif_dump.append(fi.get_exif())
+
+                import_trace.write("✅OK!\t%s\n" % fi.flags)
+                print("✅  Imported: ", fi.flags)
+
+            else:
+                self.count_existed += 1
+                import_trace.write("\t♻️ Existed\n")
+                print("♻️  Existed ")
+        except Exception as e:
+            import_trace.write("❌ERROR %s\n\n" % e)
+            print("❌  Error")
+            raise
+
+    def import_files(self, import_path, recursive=True):
+
+        import glob
         import_trace = open(os.path.join(self.base_path, Folders.LOG.value, "import-" + self.start_time + ".log"), "a")
 
-        count_imported = 0
-        count_existed = 0
+        try:
+            for ext in extensions():
+                #for filename in Path(import_path).rglob('*' + ext):
+                for filename in glob.iglob(os.path.join(import_path, '**', '*' + ext), recursive=recursive):
+                    #if filename.is_file():
+                    if os.path.isfile(filename):
+                        self.import_file(filename, import_trace)
 
-        for ext in extensions():
-            for filename in Path(import_path).rglob('*' + ext):
-                if filename.is_file():
-                    print("Reading file %s" % filename, end=' ')
-                    try:
-                        fi = self.FileImporter(
-                            self.base_path, filename,
-                            copy_cmd=self.copy_cmd,
-                            start_time=self.start_time,
-                            hardlink=self.hardlink)
+        except Exception:
+            raise
+        finally:
+            print("found files: %s, cloned files: %s, already existed: %s  "
+                  % (self.count_imported + self.count_existed, self.count_imported, self.count_existed) )
+            logging.info("found files: %s, cloned files: %s, already existed: %s  "
+                         , self.count_imported+self.count_existed, self.count_imported, self.count_existed)
 
-                        if fi.imported:
-                            count_imported += 1
+            if self.dump_exif:
+                json_file = \
+                    open(os.path.join(self.base_path, Folders.LOG.value, "exif-" + self.start_time + ".json"), "w")
+                json.dump(self.exif_dump, json_file, indent=4)
 
-                            import_trace.write("%s\t%s\n" % (os.path.abspath(filename), fi.full_path))
+            self.osm.cache_write()
 
-                            fi.link_import()
-                            fi.link_gps(self.osm)
-                            fi.link_datetime()
-                            fi.link_camera()
-
-                            if self.dump_exif:
-                                self.exif_dump.append(fi.get_exif())
-
-                            print("✅  Imported: ", fi.flags)
-
-                        else:
-                            count_existed += 1
-                            print("♻️  Existed ")
-                    except Exception:
-                        print("❌  Error")
-                        raise
-
-        print("found files: %s, cloned files: %s, already existed: %s  "
-              % (count_imported+count_existed, count_imported, count_existed) )
-        logging.info("found files: %s, cloned files: %s, already existed: %s  "
-                     , count_imported+count_existed, count_imported, count_existed)
-
-        if self.dump_exif:
-            json_file = open(os.path.join(self.base_path, Folders.LOG.value, "exif-" + self.start_time + ".json"), "a")
-            json.dump(self.exif_dump, json_file, indent=4)
-
-        self.osm.cache_write()
 
     class FileImporter:
 
@@ -311,6 +330,7 @@ class PhotoWoylie:
                 check_call(self.copy_cmd + [str(self.old_file_path), self.full_path])
 
                 self.flags.append("#")
+
                 mstring = check_call(["exiftool", "-json", "-n", self.full_path])
                 self.exif = json.loads(mstring)[0]
                 self.datetime_filename = \
@@ -366,7 +386,7 @@ class PhotoWoylie:
             if 'Model' in self.exif:
                 name += " " + self.exif['Model']
 
-            print(name)
+            #print(name)
             if name != "":
                 path = os.path.join(self.base_path, Folders.BY_CAMERA.value, name)
                 os.makedirs(path, exist_ok=True)
