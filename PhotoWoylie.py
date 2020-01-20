@@ -35,6 +35,7 @@ import enum
 import datetime
 import json
 import requests
+import glob
 from pathlib import Path
 
 # TODO: import multiprocessing # use parallel processing
@@ -281,7 +282,6 @@ class PhotoWoylie:
 
     def import_files(self, import_path, recursive=True):
 
-        import glob
         import_trace = open(os.path.join(self.base_path, Folders.LOG.value, "import-" + self.start_time + ".log"), "a")
 
         try:
@@ -330,7 +330,8 @@ class PhotoWoylie:
                 )
             )
 
-            if not os.path.exists(self.full_path):
+            if len(glob.glob(os.path.splitext(self.full_path)[0] + '*')) == 0:
+
                 check_call(self.copy_cmd + [str(self.old_file_path), self.full_path])
 
                 self.flags.append("#")
