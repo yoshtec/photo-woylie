@@ -40,6 +40,8 @@ from pathlib import Path
 
 # TODO: import multiprocessing # use parallel processing
 
+STOP_FILE = ".woylie_stop"
+
 
 class Folders(enum.Enum):
     LOG = "log"
@@ -58,22 +60,22 @@ class MetaInfo(enum.Enum):
     DATETIME_FILE_MODIFY = "FileModifyDate"
 
 
-def hashfile(filename):
+def hash_file(filename):
     """
     Reads a File and returns the hex digest of the file
     """
 
     import hashlib
     buffer = 65536
-    hash = hashlib.sha256()
+    file_hash = hashlib.sha256()
 
     with open(filename, 'r+b') as f:
         while True:
             data = f.read(buffer)
             if not data:
                 break
-            hash.update(data)
-    return hash.hexdigest()
+            file_hash.update(data)
+    return file_hash.hexdigest()
 
 
 def check_call(args, shell=False, ignore_return_code=False):
@@ -96,14 +98,16 @@ def check_call(args, shell=False, ignore_return_code=False):
     return stdout
 
 
-def extensions():
-    exts = ['.ras', '.xwd', '.bmp', '.jpe', '.jpg', '.jpeg', '.xpm',
-            '.ief', '.pbm', '.tif', '.tiff', '.gif', '.ppm', '.xbm',
-             '.rgb', '.pgm', '.png', '.pnm', '.heic', '.heif']
-    return exts + [x.upper() for x in exts]
-
+EXTENSIONS_PIC = ['.ras', '.xwd', '.bmp', '.jpe', '.jpg', '.jpeg', '.xpm', '.ief', '.pbm', '.tif', '.tiff', '.gif',
+                  '.ppm', '.xbm', '.rgb', '.pgm', '.png', '.pnm', '.heic', '.heif']
+EXTENSIONS_RAW = []
+EXTENSIONS_MOV = []
 
 IGNORE_PATH = ['.AppleDouble', '.git']
+
+
+def extensions():
+    return EXTENSIONS_PIC + [x.upper() for x in EXTENSIONS_PIC]
 
 
 def get_copy_cmd():
@@ -112,7 +116,7 @@ def get_copy_cmd():
         return ["cp", "-c"]
     elif platform.system() == "Windows":
         print("WARN: Windows Support currently not implemented")
-        return ["copy"] # Windows Use Junctions or Links?
+        return ["copy"]  # Windows Use Junctions or Links?
     else:
         return ["cp", "--reflink=auto"]
 
@@ -132,9 +136,9 @@ class OSMResolver:
     URL = 'https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=12&lat=%s&lon=%s'
 
     def __init__(self, file_name):
-        print("Geo data provided by OpenStreetmap:")
-        print("-|> © OpenStreetMap contributors")
-        print("-|> url: https://www.openstreetmap.org/copyright")
+        print("🗺️  Geo data provided by OpenStreetmap:")
+        print("🗺️ -|> © OpenStreetMap contributors")
+        print("🗺️ -|> url: https://www.openstreetmap.org/copyright")
 
         self.file_name = file_name
         if file_name is not None and os.path.exists(file_name):
@@ -177,7 +181,6 @@ class OSMResolver:
 
     def resolve_name(self, lat, lon):
         osmjs = self.resolve(lat, lon)
-        #print(osmjs)
 
         if osmjs:
             if 'address' in osmjs and 'country' in osmjs['address']:
@@ -206,7 +209,7 @@ class OSMResolver:
 class PhotoWoylie:
 
     def __init__(self, base_path, copy_cmd=None, hardlink=True, dump_exif=False):
-        self.base_path = base_path
+        self.base_path: Path = Path(base_path)
 
         self.copy_cmd = copy_cmd if copy_cmd else get_copy_cmd()
 
@@ -223,23 +226,25 @@ class PhotoWoylie:
 
         self.bootstrap_directory_structure()
 
-        self.osm = OSMResolver(os.path.join(self.base_path, Folders.DATA.value, "osm-cache.json"))
+        self.osm = OSMResolver(self.base_path / Folders.DATA.value / "osm-cache.json")
+
+        self.extensions = EXTENSIONS_PIC
 
     def bootstrap_directory_structure(self):
-        if not os.path.exists(self.base_path):
-            os.mkdir(self.base_path)
+        if not self.base_path.exists():
+            self.base_path.mkdir()
 
         for f in Folders:
-            path = os.path.join(self.base_path, f.value)
-            if not os.path.exists(path):
+            path = self.base_path / f.value
+            if not path.exists():
                 logging.info("Creating path: %s ", path)
-                os.mkdir(path)
+                path.mkdir()
 
         for f in "0123456789abcdef":
-            path = os.path.join(self.base_path, Folders.HASH_LIB.value, f)
-            if not os.path.exists(path):
+            path = self.base_path / Folders.HASH_LIB.value / f
+            if not path.exists():
                 logging.info("Creating path: %s ", path)
-                os.mkdir(path)
+                path.mkdir()
 
     def import_file(self, filename, import_trace):
         try:
@@ -282,31 +287,39 @@ class PhotoWoylie:
 
     def import_files(self, import_path, recursive=True):
 
-        import_trace = open(os.path.join(self.base_path, Folders.LOG.value, "import-" + self.start_time + ".log"), "a")
+        import_trace = self.base_path.joinpath(Folders.LOG.value, "import-" + self.start_time + ".log").open("w")
 
         try:
-            for ext in extensions():
-                #for filename in Path(import_path).rglob('*' + ext):
-                for filename in glob.iglob(os.path.join(import_path, '**', '*' + ext), recursive=recursive):
-                    #if filename.is_file():
-                    if os.path.isfile(filename):
-                        self.import_file(filename, import_trace)
+            for file in self.file_digger(Path(import_path), recursive):
+                self.import_file(file, import_trace)
 
         except Exception:
             raise
         finally:
             print("-->")
-            print("found files: %s, cloned files: %s, already existed: %s  "
-                  % (self.count_imported + self.count_existed, self.count_imported, self.count_existed) )
-            logging.info("found files: %s, cloned files: %s, already existed: %s  "
-                         , self.count_imported+self.count_existed, self.count_imported, self.count_existed)
+            print("ℹ️ found files: %s, cloned files: %s, already existed: %s  "
+                  % (self.count_imported + self.count_existed, self.count_imported, self.count_existed))
+            logging.info("found files: %s, cloned files: %s, already existed: %s  ",
+                         self.count_imported + self.count_existed, self.count_imported, self.count_existed)
 
             if self.dump_exif:
-                json_file = \
-                    open(os.path.join(self.base_path, Folders.LOG.value, "exif-" + self.start_time + ".json"), "w")
+                json_file = self.base_path.joinpath( Folders.LOG.value, "exif-" + self.start_time + ".json").open("w")
                 json.dump(self.exif_dump, json_file, indent=4)
 
             self.osm.cache_write()
+
+    def file_digger(self, path: Path, recursive: bool = True):
+        stop_file = path.joinpath(STOP_FILE)  # stop if there is a stop file
+        if not stop_file.exists():
+            if path.exists() and path.is_dir():
+                for p in path.iterdir():
+                    if p.is_file() and p.suffix.lower() in self.extensions:
+                        yield p
+
+                    if p.is_dir() and recursive:
+                        yield from self.file_digger(p, recursive)
+        else:
+            print("⏸️ Found a stop-file in: ", stop_file)
 
     class FileImporter:
         def __init__(self, base_path, filename, copy_cmd, start_time, hardlink=True):
@@ -319,7 +332,7 @@ class PhotoWoylie:
             head, self.old_file_name = os.path.split(filename)
             file, self.ext = os.path.splitext(filename)
             self.ext = self.ext.lower()  # make the extension lowercase for consistency
-            self.file_hash = hashfile(filename)
+            self.file_hash = hash_file(filename)
 
             self.link_function = os.link if hardlink else os.symlink
             self.copy_cmd = copy_cmd if copy_cmd else get_copy_cmd()
@@ -382,7 +395,7 @@ class PhotoWoylie:
         def link_camera(self):
             name = ""
 
-            if 'Comment' in self.exif and self.exif['Comment'] == "Screenshot":
+            if 'UserComment' in self.exif and self.exif['UserComment'] == "Screenshot":
                 name = "Screenshot"
 
             if 'Make' in self.exif:
@@ -391,12 +404,12 @@ class PhotoWoylie:
             if 'Model' in self.exif:
                 name += " " + self.exif['Model']
 
-            #print(name)
             if name != "":
                 path = os.path.join(self.base_path, Folders.BY_CAMERA.value, name)
                 os.makedirs(path, exist_ok=True)
                 self.link_function(self.full_path, os.path.join(path, self.datetime_filename))
                 self.flags.append("📸")
+
 
 def main(argv):
     import argparse
