@@ -29,13 +29,11 @@ Folders
 
 import os
 import sys
-import os.path
 import logging
 import enum
 import datetime
 import json
 import requests
-import glob
 from pathlib import Path
 
 # TODO: import multiprocessing # use parallel processing
@@ -135,14 +133,14 @@ def extract_date(exif):
 class OSMResolver:
     URL = 'https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=12&lat=%s&lon=%s'
 
-    def __init__(self, file_name):
+    def __init__(self, file_name: Path):
         print("🗺️  Geo data provided by OpenStreetmap:")
         print("🗺️ -|> © OpenStreetMap contributors")
         print("🗺️ -|> url: https://www.openstreetmap.org/copyright")
 
         self.file_name = file_name
-        if file_name is not None and os.path.exists(file_name):
-            file = open(file_name, 'r')
+        if file_name is not None and file_name.exists():
+            file = file_name.open('r')
             self.cache = json.load(file)
             file.close()
         else:
@@ -179,23 +177,23 @@ class OSMResolver:
         if osmjs:
             if 'address' in osmjs and 'country' in osmjs['address']:
                 if 'city' in osmjs['address']:
-                    return os.path.join(osmjs['address']['country'], osmjs['address']['city'])
+                    return Path(osmjs['address']['country'], osmjs['address']['city'])
                 elif 'town' in osmjs['address']:
-                    return os.path.join(osmjs['address']['country'], osmjs['address']['town'])
+                    return Path(osmjs['address']['country'], osmjs['address']['town'])
                 elif 'state' in osmjs['address']:
-                    return os.path.join(osmjs['address']['country'], osmjs['address']['state'])
+                    return Path(osmjs['address']['country'], osmjs['address']['state'])
                 elif 'county' in osmjs['address']:
-                    return os.path.join(osmjs['address']['country'], osmjs['address']['county'])
+                    return Path(osmjs['address']['country'], osmjs['address']['county'])
                 else:
-                    os.path.join(osmjs['address']['country'])
+                    Path(osmjs['address']['country'])
             elif 'display_name' in osmjs:
-                return os.path.join(osmjs['display_name'])
+                return Path(osmjs['display_name'])
 
         print(osmjs)
-        return os.path.join("Unknown")
+        return Path("Unknown")
 
     def cache_write(self):
-        file = open(self.file_name, "w")
+        file = self.file_name.open("w")
         json.dump(self.cache, file, indent=4)
         file.close()
 
@@ -298,7 +296,7 @@ class PhotoWoylie:
                          self.count_imported + self.count_existed, self.count_imported, self.count_existed)
 
             if self.dump_exif:
-                json_file = self.base_path.joinpath( Folders.LOG.value, "exif-" + self.start_time + ".json").open("w")
+                json_file = self.base_path.joinpath(Folders.LOG.value, "exif-" + self.start_time + ".json").open("w")
                 json.dump(self.exif_dump, json_file, indent=4)
 
             self.osm.cache_write()
@@ -333,7 +331,8 @@ class PhotoWoylie:
             self.link_function = os.link if hardlink else os.symlink
             self.copy_cmd = copy_cmd if copy_cmd else get_copy_cmd()
 
-            self.full_path = self.base_path / Folders.HASH_LIB.value / self.file_hash[0:1] / str(self.file_hash + self.ext)
+            self.full_path = self.base_path / Folders.HASH_LIB.value / self.file_hash[0:1] / \
+                             str(self.file_hash + self.ext)
 
             if not any(self.full_path.parent.glob(self.file_hash + ".*")):
 
