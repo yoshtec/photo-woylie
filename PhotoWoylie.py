@@ -349,16 +349,18 @@ class PhotoWoylie:
             else:
                 self.imported = False
 
+        def _link(self, link_name: Path):
+            link_name.parent.mkdir(parents=True, exist_ok=True)
+            if not link_name.exists():
+                self.link_function(self.full_path, link_name)
+
         def link_import(self):
-            path = self.base_path / Folders.BY_IMPORT.value / self.start_time
-            path.mkdir(parents=True, exist_ok=True)
-            self.link_function(self.full_path, path.joinpath(self.old_file_name))
+            self._link(self.base_path / Folders.BY_IMPORT.value / self.start_time / self.old_file_name)
             self.flags.append("💾")
 
         def link_datetime(self):
-            path = self.base_path / Folders.BY_TIME.value / self.datetime_filename[0:4] / self.datetime_filename[5:7]
-            path.mkdir(parents=True, exist_ok=True)
-            self.link_function(self.full_path, path.joinpath(self.datetime_filename))
+            self._link(self.base_path / Folders.BY_TIME.value / self.datetime_filename[0:4] /
+                       self.datetime_filename[5:7] / self.datetime_filename)
             self.flags.append("🕘")
 
         def get_exif(self):
@@ -377,9 +379,7 @@ class PhotoWoylie:
 
             if lat is not None and lon is not None:
                 osmpath = osm.resolve_name(lat, lon)
-                path = self.base_path / Folders.BY_LOCATION.value / osmpath
-                path.mkdir(parents=True, exist_ok=True)
-                self.link_function(self.full_path, path.joinpath(self.datetime_filename))
+                self._link(self.base_path / Folders.BY_LOCATION.value / osmpath / self.datetime_filename)
                 self.flags.append("🌍")
 
         def link_camera(self):
