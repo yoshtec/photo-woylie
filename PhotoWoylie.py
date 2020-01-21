@@ -149,15 +149,9 @@ class OSMResolver:
             self.cache = []
 
     def _resolve_cache(self, lat, lon):
-
         # TODO: this could be a lot smarter
         for item in self.cache:
-
             x = item['boundingbox']
-            # print("lat, lon, array", lat, lon, x)
-            # 'boundingbox': ['28.4793827', '28.6129197', '77.2054109', '77.346601']
-            # south Latitude, north Latitude, west Longitude, east Longitude
-
             if float(x[0]) < float(lat) < float(x[1]) and float(x[2]) < float(lon) < float(x[3]):
                 return item
 
@@ -228,6 +222,7 @@ class PhotoWoylie:
 
         self.osm = OSMResolver(self.base_path / Folders.DATA.value / "osm-cache.json")
 
+        self.ignore_path = IGNORE_PATH
         self.extensions = EXTENSIONS_PIC
 
     def bootstrap_directory_structure(self):
@@ -246,10 +241,10 @@ class PhotoWoylie:
                 logging.info("Creating path: %s ", path)
                 path.mkdir()
 
-    def import_file(self, filename, import_trace):
+    def import_file(self, filename: Path, import_trace):
         try:
             print("Reading file %s" % filename, end=' ')
-            import_trace.write("%s\t" % os.path.abspath(filename))
+            import_trace.write("%s\t" % filename.absolute())
 
             fi = self.FileImporter(
                 self.base_path, filename,
@@ -310,46 +305,43 @@ class PhotoWoylie:
 
     def file_digger(self, path: Path, recursive: bool = True):
         stop_file = path.joinpath(STOP_FILE)  # stop if there is a stop file
-        if not stop_file.exists():
-            if path.exists() and path.is_dir():
-                for p in path.iterdir():
-                    if p.is_file() and p.suffix.lower() in self.extensions:
-                        yield p
-
-                    if p.is_dir() and recursive:
-                        yield from self.file_digger(p, recursive)
-        else:
+        if stop_file.exists():
             print("⏸️ Found a stop-file in: ", stop_file)
+        elif path.parts[-1] in self.ignore_path:
+            print("⏸️ ignoring path: ", path)
+        elif path.exists() and path.is_dir():
+            for p in path.iterdir():
+                if p.is_file() and p.suffix.lower() in self.extensions:
+                    yield p
+
+                if p.is_dir() and recursive:
+                    yield from self.file_digger(p, recursive)
 
     class FileImporter:
-        def __init__(self, base_path, filename, copy_cmd, start_time, hardlink=True):
+        def __init__(self, base_path: Path, filename: Path, copy_cmd, start_time: str, hardlink=True):
             self.flags = []
 
-            self.base_path = base_path
+            self.base_path = base_path.absolute()
             self.start_time = start_time
 
             self.old_file_path = filename
-            head, self.old_file_name = os.path.split(filename)
-            file, self.ext = os.path.splitext(filename)
-            self.ext = self.ext.lower()  # make the extension lowercase for consistency
+            self.old_file_name = filename.name
+            self.ext = filename.suffix.lower()  # make the extension lowercase for consistency
+
             self.file_hash = hash_file(filename)
 
             self.link_function = os.link if hardlink else os.symlink
             self.copy_cmd = copy_cmd if copy_cmd else get_copy_cmd()
 
-            self.full_path = os.path.abspath(
-                os.path.join(
-                    self.base_path, Folders.HASH_LIB.value, self.file_hash[0:1], self.file_hash + self.ext
-                )
-            )
+            self.full_path = self.base_path / Folders.HASH_LIB.value / self.file_hash[0:1] / str(self.file_hash + self.ext)
 
-            if len(glob.glob(os.path.splitext(self.full_path)[0] + '*')) == 0:
+            if not any(self.full_path.parent.glob(self.file_hash + ".*")):
 
-                check_call(self.copy_cmd + [str(self.old_file_path), self.full_path])
+                check_call(self.copy_cmd + [str(self.old_file_path), str(self.full_path)])
 
                 self.flags.append("#")
 
-                mstring = check_call(["exiftool", "-json", "-n", self.full_path])
+                mstring = check_call(["exiftool", "-json", "-n", str(self.full_path)])
                 self.exif = json.loads(mstring)[0]
                 self.datetime_filename = \
                     extract_date(self.exif).replace(":", "-").replace(" ", "_") + "_" + self.file_hash[0:8] + self.ext
@@ -359,16 +351,15 @@ class PhotoWoylie:
                 self.imported = False
 
         def link_import(self):
-            path = os.path.join(self.base_path, Folders.BY_IMPORT.value, self.start_time)
-            os.makedirs(path, exist_ok=True)
-            self.link_function(self.full_path, os.path.join(path, self.old_file_name))
+            path = self.base_path / Folders.BY_IMPORT.value / self.start_time
+            path.mkdir(parents=True, exist_ok=True)
+            self.link_function(self.full_path, path.joinpath(self.old_file_name))
             self.flags.append("💾")
 
         def link_datetime(self):
-            path = os.path.join(
-                self.base_path, Folders.BY_TIME.value, self.datetime_filename[0:4], self.datetime_filename[5:7])
-            os.makedirs(path, exist_ok=True)
-            self.link_function(self.full_path, os.path.join(path, self.datetime_filename))
+            path = self.base_path / Folders.BY_TIME.value / self.datetime_filename[0:4] / self.datetime_filename[5:7]
+            path.mkdir(parents=True, exist_ok=True)
+            self.link_function(self.full_path, path.joinpath(self.datetime_filename))
             self.flags.append("🕘")
 
         def get_exif(self):
@@ -387,9 +378,9 @@ class PhotoWoylie:
 
             if lat is not None and lon is not None:
                 osmpath = osm.resolve_name(lat, lon)
-                path = os.path.join(self.base_path, Folders.BY_LOCATION.value, osmpath)
-                os.makedirs(path, exist_ok=True)
-                self.link_function(self.full_path, os.path.join(path, self.datetime_filename))
+                path = self.base_path / Folders.BY_LOCATION.value / osmpath
+                path.mkdir(parents=True, exist_ok=True)
+                self.link_function(self.full_path, path.joinpath(self.datetime_filename))
                 self.flags.append("🌍")
 
         def link_camera(self):
@@ -405,9 +396,9 @@ class PhotoWoylie:
                 name += " " + self.exif['Model']
 
             if name != "":
-                path = os.path.join(self.base_path, Folders.BY_CAMERA.value, name)
-                os.makedirs(path, exist_ok=True)
-                self.link_function(self.full_path, os.path.join(path, self.datetime_filename))
+                path = self.base_path / Folders.BY_CAMERA.value / name
+                path.mkdir(parents=True, exist_ok=True)
+                self.link_function(self.full_path, path.joinpath(self.datetime_filename))
                 self.flags.append("📸")
 
 
