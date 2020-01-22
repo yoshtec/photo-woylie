@@ -449,10 +449,10 @@ def main(argv):
     )
 
     parser.add_argument(
-        '--language',
+        '--language', '-l',
         dest='lang',
         metavar='LANG',
-        help='browser language code for request to openstreetmap',
+        help='browser language code for request to openstreetmap'
     )
 
     pa = parser.parse_args(argv[1:])
@@ -466,7 +466,7 @@ def main(argv):
         sys.stdout.write(__doc__)
         return 0
 
-    if pa.base_path is not None:
+    if pa.base_path:
         woylie = PhotoWoylie(
             base_path=pa.base_path,
             hardlink=(pa.symlink is None),
