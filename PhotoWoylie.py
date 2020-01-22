@@ -149,10 +149,10 @@ class OSMResolver:
     def _resolve_cache(self, lat, lon):
         # TODO: this could be a lot smarter
         for item in self.cache:
-            x = item['boundingbox']
-            if float(x[0]) < float(lat) < float(x[1]) and float(x[2]) < float(lon) < float(x[3]):
-                return item
-
+            if 'boundingbox' in item:
+                x = item['boundingbox']
+                if float(x[0]) < float(lat) < float(x[1]) and float(x[2]) < float(lon) < float(x[3]):
+                    return item
         return None
 
     def resolve(self, lat, lon):
@@ -189,7 +189,8 @@ class OSMResolver:
             elif 'display_name' in osmjs:
                 return Path(osmjs['display_name'])
 
-        print(osmjs)
+        print("🗺️  Result for OpenStreetMap: lat, lon ", lat, lon)
+        print("🗺️  Query result: ", osmjs)
         return Path("Unknown")
 
     def cache_write(self):
@@ -241,7 +242,7 @@ class PhotoWoylie:
 
     def import_file(self, filename: Path, import_trace):
         try:
-            print("Reading file %s" % filename, end=' ')
+            print("▶️ Reading file %s" % filename, end=' ')
             import_trace.write("%s\t" % filename.absolute())
 
             fi = self.FileImporter(
@@ -261,7 +262,7 @@ class PhotoWoylie:
                 fi.link_gps(self.osm)
 
                 if self.dump_exif:
-                    self.exif_dump.append(fi.get_exif())
+                    self.exif_dump.append(fi.exif)
 
                 import_trace.write("✅OK!\t%s\n" % fi.flags)
                 print("✅  Imported: ", fi.flags)
@@ -278,7 +279,7 @@ class PhotoWoylie:
             print("❌  Error")
             raise
 
-    def import_files(self, import_path, recursive=True):
+    def import_files(self, import_path: os.PathLike, recursive: bool = True):
 
         import_trace = self.base_path.joinpath(Folders.LOG.value, "import-" + self.start_time + ".log").open("w")
 
@@ -363,9 +364,6 @@ class PhotoWoylie:
                        self.datetime_filename[5:7] / self.datetime_filename)
             self.flags.append("🕘")
 
-        def get_exif(self):
-            return self.exif
-
         def link_gps(self, osm: OSMResolver):
             lat = None
             lon = None
@@ -395,9 +393,7 @@ class PhotoWoylie:
                 name += " " + self.exif['Model']
 
             if name != "":
-                path = self.base_path / Folders.BY_CAMERA.value / name
-                path.mkdir(parents=True, exist_ok=True)
-                self.link_function(self.full_path, path.joinpath(self.datetime_filename))
+                self._link(self.base_path / Folders.BY_CAMERA.value / name.strip() / self.datetime_filename)
                 self.flags.append("📸")
 
 
