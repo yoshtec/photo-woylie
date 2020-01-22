@@ -131,13 +131,15 @@ def extract_date(exif):
 
 
 class OSMResolver:
-    URL = 'https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=12&lat=%s&lon=%s'
+    #URL = 'https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=12&lat=%s&lon=%s'
+    URL = 'https://nominatim.openstreetmap.org/reverse'
 
-    def __init__(self, file_name: Path):
+    def __init__(self, file_name: Path, lang=None):
         print("🗺️  Geo data provided by OpenStreetmap:")
         print("🗺️ -|> © OpenStreetMap contributors")
         print("🗺️ -|> url: https://www.openstreetmap.org/copyright")
 
+        self.lang = lang
         self.file_name = file_name
         if file_name is not None and file_name.exists():
             file = file_name.open('r')
@@ -162,8 +164,12 @@ class OSMResolver:
 
             # Cache miss
             if js is None:
-                url = self.URL % (lat, lon)
-                r = requests.get(url)
+                #url = self.URL % (lat, lon)
+                params = {'format': 'jsonv2', 'zoom': 12, 'lat': lat, 'lon': lon}
+                if self.lang:
+                    params['accept-language'] = self.lang
+
+                r = requests.get(self.URL, params)
 
                 if r.status_code == 200:
                     js = r.json()
@@ -201,7 +207,7 @@ class OSMResolver:
 
 class PhotoWoylie:
 
-    def __init__(self, base_path, copy_cmd=None, hardlink=True, dump_exif=False):
+    def __init__(self, base_path, copy_cmd=None, hardlink=True, dump_exif=False, lang=None):
         self.base_path: Path = Path(base_path)
 
         self.copy_cmd = copy_cmd if copy_cmd else get_copy_cmd()
@@ -219,7 +225,7 @@ class PhotoWoylie:
 
         self.bootstrap_directory_structure()
 
-        self.osm = OSMResolver(self.base_path / Folders.DATA.value / "osm-cache.json")
+        self.osm = OSMResolver(self.base_path / Folders.DATA.value / "osm-cache.json", lang=lang)
 
         self.ignore_path = IGNORE_PATH
         self.extensions = EXTENSIONS_PIC
@@ -401,20 +407,20 @@ def main(argv):
     import argparse
 
     parser = argparse.ArgumentParser(
-        description='this is the PhotoWoylie tool')
+        description='this is the PhotoWoylie tool! Organize your pictures like a pro!')
 
     parser.add_argument(
         '--base-path', '-p',
         metavar='PATH',
         dest='base_path',
         required=True,
-        help='PhotoWoylie base path')
+        help='woylie base path: all pictures and data is stored there')
 
     parser.add_argument(
         '--import-path', '-i',
         metavar='PATH',
         dest='import_path',
-        required=True,
+        nargs='+',
         help='Add the Pictures to the PhotoWoylie base Path.'
              'Pictures will only be physically copied if across filesystem '
              'or on non reflink possible fs')
@@ -427,19 +433,26 @@ def main(argv):
     parser.add_argument(
         '--verbose', '-v',
         help='verbose output',
-        action='store_true')
+        action='count')
 
     parser.add_argument(
         '--dump-exif',
         dest='dump_exif',
-        help='safe exif information per import into the log directory',
+        help='save exif information per import into the log directory',
         action='store_true')
 
     parser.add_argument(
         '--use-symlinks',
         dest='symlink',
-        help='use symlinks instead of hardlinks for linking the pictures in the by-xyz folders',
+        help='use symlinks instead of hardlinks for linking the pictures in the by-XYZ folders',
         action='store_true'
+    )
+
+    parser.add_argument(
+        '--language',
+        dest='lang',
+        metavar='LANG',
+        help='browser language code for request to openstreetmap',
     )
 
     pa = parser.parse_args(argv[1:])
@@ -457,11 +470,12 @@ def main(argv):
         woylie = PhotoWoylie(
             base_path=pa.base_path,
             hardlink=(pa.symlink is None),
-            dump_exif=(pa.dump_exif is not None)
+            dump_exif=(pa.dump_exif is not None),
+            lang=pa.lang
         )
 
-        if pa.import_path is not None:
-            woylie.import_files(pa.import_path)
+        for path in pa.import_path:
+            woylie.import_files(path)
 
 
 if "__main__" == __name__:
