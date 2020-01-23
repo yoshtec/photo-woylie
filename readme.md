@@ -2,8 +2,8 @@
 
 PhotoWoylie (short woylie) is a script for organizing your photos.
 
-It is intended to be used with CoW File Systems like btrfs, xfs, apfs. Woylie will try to use reflinks (or file clones)
-for importing photos and movies.
+It works best on CoW File Systems like btrfs, xfs, apfs. Woylie will try to use reflinks (or file clones)
+for importing photos and movies. It has been tested with apfs and btrfs.
 
 ## Rationale:
 
@@ -27,8 +27,8 @@ The name was chosen from the Endangered Species List to remind us of the fragile
 
 ## Dependencies 
 
-Woylie uses [exiftool](https://exiftool.org/) for retrieving the exif information. I found it to be most reliable and it works even with `.heic` 
-files from Apples iPhones and iPads. 
+Woylie uses [exiftool](https://exiftool.org/) for retrieving the exif information. I found it to be most reliable and 
+it works even with `.heic` files from Apples iPhones and iPads. 
 
 Install it on macOS via [homebrew](https://brew.sh/)
 ```
@@ -38,10 +38,12 @@ or on your linux distribution via your preferred package manager.
 
 ## Folder Structure
 
+woylie will maintain several folders in its base path passed by the `--base-path` argument.
 
 Folders
  - `hash-lib` -- Folder for all files ordered after sha256 hash
  - `by-time` -- Photos linked after the Year and time
+ - `by-location` -- Photos linked after Location
  - `by-camera` -- Photos sorted after the camera model.
  - `by-import` -- Photos by import run - contains the original file names
  - `log` -- Output for logfiles and the like

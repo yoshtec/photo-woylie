@@ -5,7 +5,7 @@
 """
 PhotoWoylie (short woylie) is a script for organizing your photos.
 
-It is intended to be used with CoW File Systems like btrfs, xfs, apfs. Woylie will try to use reflinks for
+It works best with CoW File Systems like btrfs, xfs, apfs. Woylie will try to use reflinks for
 importing photos and movies.
 
 Rationale:
@@ -101,7 +101,7 @@ EXTENSIONS_PIC = ['.ras', '.xwd', '.bmp', '.jpe', '.jpg', '.jpeg', '.xpm', '.ief
 EXTENSIONS_RAW = []
 EXTENSIONS_MOV = []
 
-IGNORE_PATH = ['.AppleDouble', '.git']
+IGNORE_PATH = ['.AppleDouble', '.git', '.hg', '.svn', '.bzr']
 
 
 def extensions():
@@ -131,7 +131,6 @@ def extract_date(exif):
 
 
 class OSMResolver:
-    #URL = 'https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=12&lat=%s&lon=%s'
     URL = 'https://nominatim.openstreetmap.org/reverse'
 
     def __init__(self, file_name: Path, lang=None):
@@ -140,7 +139,7 @@ class OSMResolver:
         print("🗺️ -|> url: https://www.openstreetmap.org/copyright")
 
         self.lang = lang
-        self.file_name = file_name
+        self.file_name = file_name.with_suffix("." + lang + ".json") if lang else file_name
         if file_name is not None and file_name.exists():
             file = file_name.open('r')
             self.cache = json.load(file)
@@ -165,6 +164,7 @@ class OSMResolver:
             # Cache miss
             if js is None:
                 #url = self.URL % (lat, lon)
+                # https://nominatim.org/release-docs/develop/api/Reverse/
                 params = {'format': 'jsonv2', 'zoom': 12, 'lat': lat, 'lon': lon}
                 if self.lang:
                     params['accept-language'] = self.lang
@@ -220,6 +220,7 @@ class PhotoWoylie:
 
         self.count_imported = 0
         self.count_existed = 0
+        self.count_error = 0
 
         self.hardlink = hardlink
 
@@ -245,6 +246,45 @@ class PhotoWoylie:
             if not path.exists():
                 logging.info("Creating path: %s ", path)
                 path.mkdir()
+
+    def import_files(self, import_path: os.PathLike, recursive: bool = True):
+
+        import_trace = self.base_path.joinpath(Folders.LOG.value, "import-" + self.start_time + ".log").open("w")
+
+        try:
+            for file in self.file_digger(Path(import_path), recursive):
+                self.import_file(file, import_trace)
+
+        except Exception:
+            raise
+        finally:
+            print("-->")
+            print("ℹ️ found files: %s" % (self.count_imported + self.count_existed + self.count_error))
+            print("ℹ️ cloned files: %s" % self.count_existed)
+            print("ℹ️ already existed: %s" % self.count_imported)
+            print("ℹ️ files with errors: %s" % self.count_error)
+            logging.info("found files: %s, cloned files: %s, already existed: %s  ",
+                         self.count_imported + self.count_existed, self.count_imported, self.count_existed)
+
+            if self.dump_exif:
+                json_file = self.base_path.joinpath(Folders.LOG.value, "exif-" + self.start_time + ".json").open("w")
+                json.dump(self.exif_dump, json_file, indent=4)
+
+            self.osm.cache_write()
+
+    def file_digger(self, path: Path, recursive: bool = True):
+        stop_file = path.joinpath(STOP_FILE)  # stop if there is a stop file
+        if stop_file.exists():
+            print("⏸️ Found a stop-file in: ", stop_file)
+        elif path.parts[-1] in self.ignore_path:
+            print("⏸️ ignoring path: ", path)
+        elif path.exists() and path.is_dir():
+            for p in path.iterdir():
+                if p.is_file() and p.suffix.lower() in self.extensions:
+                    yield p
+
+                if p.is_dir() and recursive:
+                    yield from self.file_digger(p, recursive)
 
     def import_file(self, filename: Path, import_trace):
         try:
@@ -279,48 +319,13 @@ class PhotoWoylie:
                 print("♻️  Existed ")
         except (RuntimeError, PermissionError) as e:
             import_trace.write("❌ERROR %s\n\n" % e)
+            self.count_error += 1
             print("❌  Error")
         except Exception as e:
             import_trace.write("❌ERROR %s\n\n" % e)
+            self.count_error += 1
             print("❌  Error")
             raise
-
-    def import_files(self, import_path: os.PathLike, recursive: bool = True):
-
-        import_trace = self.base_path.joinpath(Folders.LOG.value, "import-" + self.start_time + ".log").open("w")
-
-        try:
-            for file in self.file_digger(Path(import_path), recursive):
-                self.import_file(file, import_trace)
-
-        except Exception:
-            raise
-        finally:
-            print("-->")
-            print("ℹ️ found files: %s, cloned files: %s, already existed: %s  "
-                  % (self.count_imported + self.count_existed, self.count_imported, self.count_existed))
-            logging.info("found files: %s, cloned files: %s, already existed: %s  ",
-                         self.count_imported + self.count_existed, self.count_imported, self.count_existed)
-
-            if self.dump_exif:
-                json_file = self.base_path.joinpath(Folders.LOG.value, "exif-" + self.start_time + ".json").open("w")
-                json.dump(self.exif_dump, json_file, indent=4)
-
-            self.osm.cache_write()
-
-    def file_digger(self, path: Path, recursive: bool = True):
-        stop_file = path.joinpath(STOP_FILE)  # stop if there is a stop file
-        if stop_file.exists():
-            print("⏸️ Found a stop-file in: ", stop_file)
-        elif path.parts[-1] in self.ignore_path:
-            print("⏸️ ignoring path: ", path)
-        elif path.exists() and path.is_dir():
-            for p in path.iterdir():
-                if p.is_file() and p.suffix.lower() in self.extensions:
-                    yield p
-
-                if p.is_dir() and recursive:
-                    yield from self.file_digger(p, recursive)
 
     class FileImporter:
         def __init__(self, base_path: Path, filename: Path, copy_cmd, start_time: str, hardlink=True):
@@ -410,7 +415,7 @@ def main(argv):
         description='this is the PhotoWoylie tool! Organize your pictures like a pro!')
 
     parser.add_argument(
-        '--base-path', '-p',
+        '--base-path', '-b',
         metavar='PATH',
         dest='base_path',
         required=True,
@@ -452,7 +457,7 @@ def main(argv):
         '--language', '-l',
         dest='lang',
         metavar='LANG',
-        help='browser language code for request to openstreetmap'
+        help='browser language code for request to openstreetmap.'
     )
 
     pa = parser.parse_args(argv[1:])
@@ -469,13 +474,15 @@ def main(argv):
     if pa.base_path:
         woylie = PhotoWoylie(
             base_path=pa.base_path,
-            hardlink=(pa.symlink is None),
-            dump_exif=(pa.dump_exif is not None),
+            hardlink=pa.symlink,
+            dump_exif=pa.dump_exif,
             lang=pa.lang
         )
 
         for path in pa.import_path:
             woylie.import_files(path)
+
+    return 0
 
 
 if "__main__" == __name__:
