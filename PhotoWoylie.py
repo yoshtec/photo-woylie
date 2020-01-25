@@ -410,7 +410,7 @@ class PhotoWoylie:
                 self.flags.append("📸")
 
     @classmethod
-    def stop(cls, path: os.PathLike):
+    def stop(cls, path):
         p = Path(path)
         if p.name != STOP_FILE:
             p = p / STOP_FILE
