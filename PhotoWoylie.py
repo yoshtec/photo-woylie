@@ -40,6 +40,13 @@ from pathlib import Path
 
 STOP_FILE = ".woylie_stop"
 
+EXTENSIONS_PIC = ['.ras', '.xwd', '.bmp', '.jpe', '.jpg', '.jpeg', '.xpm', '.ief', '.pbm', '.tif', '.tiff', '.gif',
+                  '.ppm', '.xbm', '.rgb', '.pgm', '.png', '.pnm', '.heic', '.heif']
+EXTENSIONS_RAW = []
+EXTENSIONS_MOV = []
+
+IGNORE_PATH = ['.AppleDouble', '.git', '.hg', '.svn', '.bzr']
+
 
 class Folders(enum.Enum):
     LOG = "log"
@@ -60,7 +67,7 @@ class MetaInfo(enum.Enum):
 
 def hash_file(filename):
     """
-    Reads a File and returns the hex digest of the file
+    Reads a File and returns the sha256 hex digest of the file
     """
 
     import hashlib
@@ -94,14 +101,6 @@ def check_call(args, shell=False, ignore_return_code=False):
     if not ignore_return_code and p.returncode != 0:
         raise RuntimeError("failed to run '%s'" % cmd_str)
     return stdout
-
-
-EXTENSIONS_PIC = ['.ras', '.xwd', '.bmp', '.jpe', '.jpg', '.jpeg', '.xpm', '.ief', '.pbm', '.tif', '.tiff', '.gif',
-                  '.ppm', '.xbm', '.rgb', '.pgm', '.png', '.pnm', '.heic', '.heif']
-EXTENSIONS_RAW = []
-EXTENSIONS_MOV = []
-
-IGNORE_PATH = ['.AppleDouble', '.git', '.hg', '.svn', '.bzr']
 
 
 def extensions():
@@ -235,6 +234,9 @@ class PhotoWoylie:
         if not self.base_path.exists():
             self.base_path.mkdir()
 
+        # create a stop file in the base dir so that the dir is not searched.
+        self.stop(self.base_path)
+
         for f in Folders:
             path = self.base_path / f.value
             if not path.exists():
@@ -259,9 +261,9 @@ class PhotoWoylie:
             raise
         finally:
             print("-->")
-            print("ℹ️ found files: %s" % (self.count_imported + self.count_existed + self.count_error))
-            print("ℹ️ cloned files: %s" % self.count_existed)
-            print("ℹ️ already existed: %s" % self.count_imported)
+            print("ℹ️ scanned files: %s" % (self.count_imported + self.count_existed + self.count_error))
+            print("ℹ️ cloned files: %s" % self.count_imported)
+            print("ℹ️ already existed: %s" % self.count_existed)
             print("ℹ️ files with errors: %s" % self.count_error)
             logging.info("found files: %s, cloned files: %s, already existed: %s  ",
                          self.count_imported + self.count_existed, self.count_imported, self.count_existed)
@@ -407,12 +409,26 @@ class PhotoWoylie:
                 self._link(self.base_path / Folders.BY_CAMERA.value / name.strip() / self.datetime_filename)
                 self.flags.append("📸")
 
+    @classmethod
+    def stop(cls, path: os.PathLike):
+        p = Path(path)
+        if p.name != STOP_FILE:
+            p = p / STOP_FILE
+            if not p.exists():
+                p.touch(exist_ok=True)
+                print("created Stop File:", p)
+
 
 def main(argv):
     import argparse
 
     parser = argparse.ArgumentParser(
-        description='this is the PhotoWoylie tool! Organize your pictures like a pro!')
+        description='this is the PhotoWoylie tool! Organize your photos')
+
+    parser.add_argument(
+        '--explain',
+        help='Explain what %(prog)s does (and stop)',
+        action='store_true')
 
     parser.add_argument(
         '--base-path', '-b',
@@ -422,6 +438,21 @@ def main(argv):
         help='woylie base path: all pictures and data is stored there')
 
     parser.add_argument(
+        '--verbose', '-v',
+        help='verbose output',
+        action='count')
+
+    parser.add_argument(
+        '--create-stop', '-s',
+        metavar='PATH',
+        nargs='+',
+        help='create a file ".woylie_stop" that will prevent woylie to scan the directory and all subdirs',
+        dest='stop'
+    )
+
+    parser_import = parser.add_argument_group('Import', 'options for importing files')
+
+    parser_import.add_argument(
         '--import-path', '-i',
         metavar='PATH',
         dest='import_path',
@@ -430,34 +461,24 @@ def main(argv):
              'Pictures will only be physically copied if across filesystem '
              'or on non reflink possible fs')
 
-    parser.add_argument(
-        '--explain',
-        help='Explain what %(prog)s does (and stop)',
-        action='store_true')
-
-    parser.add_argument(
-        '--verbose', '-v',
-        help='verbose output',
-        action='count')
-
-    parser.add_argument(
+    parser_import.add_argument(
         '--dump-exif',
         dest='dump_exif',
         help='save exif information per import into the log directory',
         action='store_true')
 
-    parser.add_argument(
+    parser_import.add_argument(
         '--use-symlinks',
         dest='symlink',
         help='use symlinks instead of hardlinks for linking the pictures in the by-XYZ folders',
         action='store_true'
     )
 
-    parser.add_argument(
+    parser_import.add_argument(
         '--language', '-l',
         dest='lang',
         metavar='LANG',
-        help='browser language code for request to openstreetmap.'
+        help='browser language code for request to OpenStreetMap. Defaults to local language of OSM'
     )
 
     pa = parser.parse_args(argv[1:])
@@ -470,6 +491,10 @@ def main(argv):
     if pa.explain:
         sys.stdout.write(__doc__)
         return 0
+
+    if pa.stop:
+        for path in pa.stop:
+            PhotoWoylie.stop(path)
 
     if pa.base_path:
         woylie = PhotoWoylie(

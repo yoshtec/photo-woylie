@@ -1,20 +1,21 @@
 # PhotoWoylie
 
-PhotoWoylie (short woylie) is a script for organizing your photos.
+PhotoWoylie (short woylie) is a script for organizing your photos. 
 
-It works best on CoW File Systems like btrfs, xfs, apfs. Woylie will try to use reflinks (or file clones)
-for importing photos and movies. It has been tested with apfs and btrfs.
+It works best on CoW File Systems like btrfs, xfs, ocfs2 and Apples apfs. Woylie will try to use reflinks (or file clones)
+for importing photos and movies. It has been tested with apfs on macOS and btrfs on Ubuntu.
 
 ## Rationale:
 
-Leveraging reflinks it will allow for more space efficient storage of the duplicated files. Most users have already
-stored Photos on the disk in several locations. Often unable to identify which files have already been imported,
-copied, sorted or the like. Woylie will import all files to the hash-lib where files are stored by their hash digest.
-duplicate files will thus not be imported, even if they are from different locations (as long as the content hasn't
-been changed.
+Most users have already stored Photos on the disk in several locations. Often unable to identify which files have 
+already been imported, copied, sorted. This also happens with photos from backups e.g. your smartphone. Woylie will 
+import all files into hash-lib where files are stored by their hash digest. With this duplicate files will not be 
+imported, even if they are from different locations (as long as the content hasn't been changed. Woylie will use 
+reflinks for importing the files (where possible -> this will not work on Windows). Leveraging reflinks it will allow 
+for more space efficient storage of all files since spaece is only used once. 
 
-Exposing the Files again as via various folders makes it possible for any program to find and leverage the power of metadata
-
+Exposing the Files again as via various folders makes it possible for any program to find and leverage the power of 
+metadata
 
 ## Name Origin:
 
@@ -38,7 +39,8 @@ or on your linux distribution via your preferred package manager.
 
 ## Folder Structure
 
-woylie will maintain several folders in its base path passed by the `--base-path` argument.
+woylie will maintain several folders in its base path passed by the `--base-path` argument and expose imported files 
+in the directories. With a directory structure it is possible for all kinds of different software to use the contents.
 
 Folders
  - `hash-lib` -- Folder for all files ordered after sha256 hash
@@ -49,3 +51,8 @@ Folders
  - `log` -- Output for logfiles and the like
  - `data` -- general data needed by woylie
 
+## Examples
+
+```
+python3 PhotoWoylie.py -b ~/my-photos -i /path/to/photos /other/path/to/photos
+```
