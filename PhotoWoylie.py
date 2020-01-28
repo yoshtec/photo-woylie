@@ -34,6 +34,7 @@ import enum
 import datetime
 import json
 import requests
+import subprocess
 from pathlib import Path
 
 # TODO: import multiprocessing # use parallel processing
@@ -42,8 +43,8 @@ STOP_FILE = ".woylie_stop"
 
 EXTENSIONS_PIC = ['.ras', '.xwd', '.bmp', '.jpe', '.jpg', '.jpeg', '.xpm', '.ief', '.pbm', '.tif', '.tiff', '.gif',
                   '.ppm', '.xbm', '.rgb', '.pgm', '.png', '.pnm', '.heic', '.heif']
-EXTENSIONS_RAW = []
-EXTENSIONS_MOV = []
+EXTENSIONS_MOV = ['.mov', '.mts', '.mp4', '.m4v']
+EXTENSIONS_RAW = ['.raw', '.arw']
 
 IGNORE_PATH = ['.AppleDouble', '.git', '.hg', '.svn', '.bzr']
 
@@ -58,10 +59,12 @@ class Folders(enum.Enum):
     BY_LOCATION = "by-location"
 
 
-class MetaInfo(enum.Enum):
+class ExifDateTime(enum.Enum):
     DATETIME_ORG = "DateTimeOriginal"
     DATETIME_CREATED = "CreateDate"
     DATETIME_GPS = "GPSDateTime"
+    DATETIME_MOD = "ModifyDate"
+    DATETIME_SONY = "SonyDateTime"
     DATETIME_FILE_MODIFY = "FileModifyDate"
 
 
@@ -83,15 +86,13 @@ def hash_file(filename):
     return file_hash.hexdigest()
 
 
-def check_call(args, shell=False, ignore_return_code=False):
+def check_call(args, ignore_return_code=False):
     cmd_str = " ".join(args)
     logging.info("Execute command: '%s' ", cmd_str)
-    import subprocess
     p = subprocess.Popen(
         args,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        shell=shell,
         text=True)
     stdout, stderr = p.communicate()
     if stdout:
@@ -103,10 +104,6 @@ def check_call(args, shell=False, ignore_return_code=False):
     return stdout
 
 
-def extensions():
-    return EXTENSIONS_PIC + [x.upper() for x in EXTENSIONS_PIC]
-
-
 def get_copy_cmd():
     import platform
     if platform.system() == "Darwin":
@@ -116,17 +113,6 @@ def get_copy_cmd():
         return ["copy"]  # Windows Use Junctions or Links?
     else:
         return ["cp", "--reflink=auto"]
-
-
-def extract_date(exif):
-    if MetaInfo.DATETIME_CREATED.value in exif:
-        return exif[MetaInfo.DATETIME_CREATED.value]
-    elif MetaInfo.DATETIME_ORG.value in exif:
-        return exif[MetaInfo.DATETIME_ORG.value]
-    elif MetaInfo.DATETIME_GPS.value in exif:
-        return exif[MetaInfo.DATETIME_GPS.value]
-    else:
-        return exif[MetaInfo.DATETIME_FILE_MODIFY.value]
 
 
 class OSMResolver:
@@ -162,7 +148,6 @@ class OSMResolver:
 
             # Cache miss
             if js is None:
-                #url = self.URL % (lat, lon)
                 # https://nominatim.org/release-docs/develop/api/Reverse/
                 params = {'format': 'jsonv2', 'zoom': 12, 'lat': lat, 'lon': lon}
                 if self.lang:
@@ -204,9 +189,53 @@ class OSMResolver:
         file.close()
 
 
+class ExifTool:
+    """ minimal wrapper for exiftool
+    always returns -json strings
+    """
+    ENC = "utf-8"
+
+    def __init__(self):
+        cmd = ['exiftool', '-stay_open', 'True', '-@', '-', "-common_args", "-json", "-n"]
+        self._xt = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding=self.ENC)
+
+    def __del__(self):
+        self.close()
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+    def execute(self, file):
+        end = b"{ready}"
+
+        self._xt.stdin.write("\n" + str(file) + "\n-execute\n")
+        self._xt.stdin.flush()
+
+        result = b""
+        stdout = self._xt.stdout.fileno()
+        while not result[-10:].strip().endswith(end):
+            result += os.read(stdout, 4096)
+        return result.strip()[:-len(end)].decode(self.ENC)
+
+    def close(self):
+        if self._xt is not None:
+            self._xt.stdin.write("-stay_open\nFalse\n")
+            self._xt.stdin.flush()
+            self._xt.communicate()
+            del self._xt
+
+
 class PhotoWoylie:
 
-    def __init__(self, base_path, copy_cmd=None, hardlink=True, dump_exif=False, lang=None):
+    def __init__(self, base_path, copy_cmd=None, hardlink=True, dump_exif=False, lang=None,
+                 link_date=True, link_import=True, link_cam=True, link_gps=True):
+
         self.base_path: Path = Path(base_path)
 
         self.copy_cmd = copy_cmd if copy_cmd else get_copy_cmd()
@@ -221,6 +250,11 @@ class PhotoWoylie:
         self.count_existed = 0
         self.count_error = 0
 
+        self.link_import = link_import
+        self.link_date = link_date
+        self.link_cam = link_cam
+        self.link_gps = link_gps
+
         self.hardlink = hardlink
 
         self.bootstrap_directory_structure()
@@ -228,7 +262,14 @@ class PhotoWoylie:
         self.osm = OSMResolver(self.base_path / Folders.DATA.value / "osm-cache.json", lang=lang)
 
         self.ignore_path = IGNORE_PATH
-        self.extensions = EXTENSIONS_PIC
+        self.extensions = EXTENSIONS_PIC + EXTENSIONS_RAW + EXTENSIONS_MOV
+
+    def add_extensions(self, exts):
+        for e in exts:
+            if not e.startswith("."):
+                self.extensions.append("." + e.lower())
+            else:
+                self.extensions.append(e.lower())
 
     def bootstrap_directory_structure(self):
         if not self.base_path.exists():
@@ -254,8 +295,10 @@ class PhotoWoylie:
         import_trace = self.base_path.joinpath(Folders.LOG.value, "import-" + self.start_time + ".log").open("w")
 
         try:
+            exiftool = ExifTool()
+
             for file in self.file_digger(Path(import_path), recursive):
-                self.import_file(file, import_trace)
+                self.import_file(file, import_trace, exiftool)
 
         except Exception:
             raise
@@ -273,6 +316,7 @@ class PhotoWoylie:
                 json.dump(self.exif_dump, json_file, indent=4)
 
             self.osm.cache_write()
+            exiftool.close()
 
     def file_digger(self, path: Path, recursive: bool = True):
         stop_file = path.joinpath(STOP_FILE)  # stop if there is a stop file
@@ -288,26 +332,33 @@ class PhotoWoylie:
                 if p.is_dir() and recursive:
                     yield from self.file_digger(p, recursive)
 
-    def import_file(self, filename: Path, import_trace):
+    def import_file(self, filename: Path, import_trace, exiftool: ExifTool):
         try:
-            print("▶️ Reading file %s" % filename, end=' ')
+            print("▶️ File:", filename, end=' ')
             import_trace.write("%s\t" % filename.absolute())
 
             fi = self.FileImporter(
                 self.base_path, filename,
+                exiftool=exiftool,
                 copy_cmd=self.copy_cmd,
                 start_time=self.start_time,
                 hardlink=self.hardlink)
+
+            fi.import_file()
 
             if fi.imported:
                 self.count_imported += 1
 
                 import_trace.write("%s\t" % fi.full_path)
 
-                fi.link_import()
-                fi.link_datetime()
-                fi.link_camera()
-                fi.link_gps(self.osm)
+                if self.link_import:
+                    fi.link_import()
+                if self.link_date:
+                    fi.link_datetime()
+                if self.link_cam:
+                    fi.link_camera()
+                if self.link_gps:
+                    fi.link_gps(self.osm)
 
                 if self.dump_exif:
                     self.exif_dump.append(fi.exif)
@@ -330,9 +381,10 @@ class PhotoWoylie:
             raise
 
     class FileImporter:
-        def __init__(self, base_path: Path, filename: Path, copy_cmd, start_time: str, hardlink=True):
+        def __init__(self, base_path: Path, filename: Path, copy_cmd, exiftool: ExifTool, start_time: str, hardlink=True):
             self.flags = []
 
+            self.exiftool = exiftool
             self.base_path = base_path.absolute()
             self.start_time = start_time
 
@@ -348,28 +400,37 @@ class PhotoWoylie:
             self.full_path = self.base_path / Folders.HASH_LIB.value / self.file_hash[0:1] / \
                              str(self.file_hash + self.ext)
 
-            if not any(self.full_path.parent.glob(self.file_hash + ".*")):
+            # TODO: sanity check
+            self.datetime_filename = None
+            self.exif = None
+            self.imported = False
 
+        def import_file(self):
+            if not any(self.full_path.parent.glob(self.file_hash + ".*")):
                 check_call(self.copy_cmd + [str(self.old_file_path), str(self.full_path)])
 
                 self.flags.append("#")
 
-                mstring = check_call(["exiftool", "-json", "-n", str(self.full_path)])
+                mstring = self.exiftool.execute(self.full_path)
                 self.exif = json.loads(mstring)[0]
-                self.datetime_filename = \
-                    extract_date(self.exif).replace(":", "-").replace(" ", "_") + "_" + self.file_hash[0:8] + self.ext
 
+                self.datetime_filename = self.extract_date().replace(":", "-").replace(" ", "_")[0:19] \
+                                         + "_" + self.file_hash[0:8] + self.ext
                 self.imported = True
-            else:
-                self.imported = False
 
         def _link(self, link_name: Path):
             link_name.parent.mkdir(parents=True, exist_ok=True)
             if not link_name.exists():
                 self.link_function(self.full_path, link_name)
+                return True
+            return False
 
         def link_import(self):
-            self._link(self.base_path / Folders.BY_IMPORT.value / self.start_time / self.old_file_name)
+            p = self.base_path / Folders.BY_IMPORT.value / self.start_time / self.old_file_name
+            if not self._link(p):
+                p = self.base_path / Folders.BY_IMPORT.value / self.start_time / \
+                   Path(self.old_file_path.parts[-1] + self.old_file_name)
+                self._link(p)
             self.flags.append("💾")
 
         def link_datetime(self):
@@ -409,6 +470,11 @@ class PhotoWoylie:
                 self._link(self.base_path / Folders.BY_CAMERA.value / name.strip() / self.datetime_filename)
                 self.flags.append("📸")
 
+        def extract_date(self):
+            for dt in ExifDateTime:
+                if dt.value in self.exif:
+                    return self.exif[dt.value]
+
     @classmethod
     def stop(cls, path):
         p = Path(path)
@@ -417,6 +483,24 @@ class PhotoWoylie:
             if not p.exists():
                 p.touch(exist_ok=True)
                 print("created Stop File:", p)
+
+    @classmethod
+    def show_extensions(cls):
+        print("The following extensions are build in:")
+
+        print("Pictures:")
+        for ext in sorted(EXTENSIONS_PIC):
+            print("P: %s" % ext)
+
+        print("Raw Formats")
+        for ext in sorted(EXTENSIONS_RAW):
+            print("Raw: %s" % ext)
+
+        print("Movie Formats")
+        for ext in sorted(EXTENSIONS_MOV):
+            print("M: %s" % ext)
+
+        print("since woylie depends on exiftool for metadata extraction check out https://exiftool.org/#supported ")
 
 
 def main(argv):
@@ -441,6 +525,12 @@ def main(argv):
         '--verbose', '-v',
         help='verbose output',
         action='count')
+
+    parser.add_argument(
+        '--show-extensions',
+        help='list extensions of files that will be sorted and quit',
+        dest='extensions'
+    )
 
     parser.add_argument(
         '--create-stop', '-s',
@@ -481,6 +571,14 @@ def main(argv):
         help='browser language code for request to OpenStreetMap. Defaults to local language of OSM'
     )
 
+    parser_import.add_argument(
+        '--include-extensions', '-e',
+        nargs='+',
+        dest='add_ext',
+        help='add extensions to include',
+        metavar='.ext'
+    )
+
     pa = parser.parse_args(argv[1:])
 
     # safety net if no arguments are given call for help
@@ -491,6 +589,9 @@ def main(argv):
     if pa.explain:
         sys.stdout.write(__doc__)
         return 0
+
+    if pa.extensions:
+        PhotoWoylie.show_extensions()
 
     if pa.stop:
         for path in pa.stop:
@@ -503,6 +604,8 @@ def main(argv):
             dump_exif=pa.dump_exif,
             lang=pa.lang
         )
+        if pa.add_ext:
+            woylie.add_extensions(pa.add_ext)
 
         for path in pa.import_path:
             woylie.import_files(path)
