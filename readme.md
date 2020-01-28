@@ -1,9 +1,11 @@
 # PhotoWoylie
 
-PhotoWoylie (short woylie) is a script for organizing your photos. 
+PhotoWoylie (short woylie) is a script for organizing your photos. Woylie will be able to keep track of already imported
+files and sorts them by date (year / month), location and camera.
 
-It works best on CoW File Systems like btrfs, xfs, ocfs2 and Apples apfs. Woylie will try to use reflinks (or file clones)
-for importing photos and movies. It has been tested with apfs on macOS and btrfs on Ubuntu.
+It works best on CoW File Systems like btrfs, xfs, ocfs2 and Apples apfs. Woylie will try to use 
+[reflinks](https://dev.to/robogeek/reflinks-vs-symlinks-vs-hard-links-and-how-they-can-help-machine-learning-projects-1cj4)
+(or file clones) for importing photos and movies. It has been tested with apfs on macOS and btrfs on Ubuntu.
 
 ## Rationale:
 
