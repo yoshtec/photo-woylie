@@ -8,22 +8,19 @@ PhotoWoylie (short woylie) is a script for organizing your photos.
 It works best with CoW File Systems like btrfs, xfs, apfs. Woylie will try to use reflinks for
 importing photos and movies.
 
-Rationale:
-Leveraging reflinks it will allow for more space efficient storage of the duplicated files. Most users have already
-stored Photos on the disk in several locations. Often unable to identify which files have already been imported,
-copied, sorted or the like. Woylie will import all files to the hash-lib where files are stored by their hash digest.
-duplicate files will thus not be imported, even if they are from different locations (as long as the content hasn't
-been changed.
+Folders:
+ - hash-lib - Folder for all files ordered after sha256 hash
+ - data -- general data needed by woylie, e.g. OpenStreetMap cache.
+ - log - Output for logfiles
+  Photos will be sorted into:
+ - by-time - Photos linked after the Year and time
+ - by-camera - Photos sorted after the camera model.
+ - by-import - Photos by import run - contains the original file names
 
+woylie depends on exiftool for reading metadata: check out https://exiftool.org/#supported
 
-Folders
- - hash-lib -- Folder for all files ordered after sha256 hash
- - by-time -- Photos linked after the Year and time
- - by-camera -- Photos sorted after the camera model.
- - by-import -- Photos by import run - contains the original file names
- - log -- Output for logfiles
- - data -- general data needed by woylie
-
+OpenStreetMap Nominatim is used for resolving locations from GPS metadata.
+https://nominatim.org/release-docs/develop/api/Reverse/
 
 """
 
@@ -37,7 +34,7 @@ import requests
 import subprocess
 from pathlib import Path
 
-# TODO: import multiprocessing # use parallel processing
+# TODO: import multiprocessing # and use parallel processing
 
 STOP_FILE = ".woylie_stop"
 
@@ -249,6 +246,8 @@ class PhotoWoylie:
         self.count_imported = 0
         self.count_existed = 0
         self.count_error = 0
+        self.count_scanned = 0
+        self.count_deleted = 0
 
         self.link_import = link_import
         self.link_date = link_date
@@ -294,12 +293,11 @@ class PhotoWoylie:
 
         import_trace = self.base_path.joinpath(Folders.LOG.value, "import-" + self.start_time + ".log").open("w")
 
-        try:
-            exiftool = ExifTool()
+        exiftool = ExifTool()
 
+        try:
             for file in self.file_digger(Path(import_path), recursive):
                 self.import_file(file, import_trace, exiftool)
-
         except Exception:
             raise
         finally:
@@ -316,7 +314,33 @@ class PhotoWoylie:
                 json.dump(self.exif_dump, json_file, indent=4)
 
             self.osm.cache_write()
-            exiftool.close()
+            del exiftool
+
+    def remove_files(self, delete_path: os.PathLike, recursive: bool = True):
+        delete_trace = self.base_path.joinpath(Folders.LOG.value, "delete-" + self.start_time + ".log").open("w")
+
+        exiftool = ExifTool()
+
+        try:
+            for file in self.file_digger(Path(delete_path), recursive):
+                self.remove_file(file, delete_trace, exiftool)
+        except Exception:
+            raise
+        finally:
+            print("-->")
+            print("ℹ️ scanned files: %s" % self.count_scanned)
+            print("ℹ️ removed files: %s" % self.count_deleted)
+            print("ℹ️ files with errors: %s" % self.count_error)
+            del exiftool
+
+    def rebuild(self):
+        # TODO
+
+        # delete by- folders
+        # go through all files in hash-lib
+
+        #
+        pass
 
     def file_digger(self, path: Path, recursive: bool = True):
         stop_file = path.joinpath(STOP_FILE)  # stop if there is a stop file
@@ -332,10 +356,10 @@ class PhotoWoylie:
                 if p.is_dir() and recursive:
                     yield from self.file_digger(p, recursive)
 
-    def import_file(self, filename: Path, import_trace, exiftool: ExifTool):
+    def remove_file(self, filename: Path, trace, exiftool: ExifTool):
         try:
             print("▶️ File:", filename, end=' ')
-            import_trace.write("%s\t" % filename.absolute())
+            trace.write("%s\t" % filename.absolute())
 
             fi = self.FileImporter(
                 self.base_path, filename,
@@ -344,12 +368,54 @@ class PhotoWoylie:
                 start_time=self.start_time,
                 hardlink=self.hardlink)
 
+            self.count_scanned += 1
+
+            fi.delete_file()
+
+            if fi.deleted:
+                self.count_deleted += 1
+
+                trace.write("%s\t" % fi.full_path)
+
+                fi.delete_links()
+
+                trace.write("Removed!\t%s\n" % fi.flags)
+                print("  Removed: ", fi.flags)
+
+            else:
+                trace.write("\t♻️ not existing\n")
+                print("♻️  Existed ")
+
+        except (RuntimeError, PermissionError) as e:
+            trace.write("❌ERROR %s\n\n" % e)
+            self.count_error += 1
+            print("❌  Error")
+        except Exception as e:
+            trace.write("❌ERROR %s\n\n" % e)
+            self.count_error += 1
+            print("❌  Error")
+            raise
+
+    def import_file(self, filename: Path, trace, exiftool: ExifTool):
+        try:
+            print("▶️ File:", filename, end=' ')
+            trace.write("%s\t" % filename.absolute())
+
+            fi = self.FileImporter(
+                self.base_path, filename,
+                exiftool=exiftool,
+                copy_cmd=self.copy_cmd,
+                start_time=self.start_time,
+                hardlink=self.hardlink)
+
+            self.count_scanned += 1
+
             fi.import_file()
 
             if fi.imported:
                 self.count_imported += 1
 
-                import_trace.write("%s\t" % fi.full_path)
+                trace.write("%s\t" % fi.full_path)
 
                 if self.link_import:
                     fi.link_import()
@@ -363,19 +429,19 @@ class PhotoWoylie:
                 if self.dump_exif:
                     self.exif_dump.append(fi.exif)
 
-                import_trace.write("✅OK!\t%s\n" % fi.flags)
+                trace.write("✅OK!\t%s\n" % fi.flags)
                 print("✅  Imported: ", fi.flags)
 
             else:
                 self.count_existed += 1
-                import_trace.write("\t♻️ Existed\n")
+                trace.write("\t♻️ Existed\n")
                 print("♻️  Existed ")
         except (RuntimeError, PermissionError) as e:
-            import_trace.write("❌ERROR %s\n\n" % e)
+            trace.write("❌ERROR %s\n\n" % e)
             self.count_error += 1
             print("❌  Error")
         except Exception as e:
-            import_trace.write("❌ERROR %s\n\n" % e)
+            trace.write("❌ERROR %s\n\n" % e)
             self.count_error += 1
             print("❌  Error")
             raise
@@ -405,25 +471,47 @@ class PhotoWoylie:
             self.exif = None
             self.imported = False
 
+            self.deleted = False
+
         def import_file(self):
             if not any(self.full_path.parent.glob(self.file_hash + ".*")):
                 check_call(self.copy_cmd + [str(self.old_file_path), str(self.full_path)])
 
                 self.flags.append("#")
-
-                mstring = self.exiftool.execute(self.full_path)
-                self.exif = json.loads(mstring)[0]
-
-                self.datetime_filename = self.extract_date().replace(":", "-").replace(" ", "_")[0:19] \
-                                         + "_" + self.file_hash[0:8] + self.ext
+                self._load_exif()
                 self.imported = True
 
+        def delete_file(self):
+            if self.full_path.exists():
+                self.flags.append("-")
+                self._load_exif()
+                self.full_path.unlink()
+                self.deleted = True
+
+        def load_file(self):
+            if self.full_path.exists():
+                self.flags.append("%")
+                self._load_exif()
+
+        def _load_exif(self):
+            mstring = self.exiftool.execute(self.full_path)
+            self.exif = json.loads(mstring)[0]
+
+            self.datetime_filename = self.extract_date().replace(":", "-").replace(" ", "_")[0:19] \
+                                     + "_" + self.file_hash[0:8] + self.ext
+
         def _link(self, link_name: Path):
-            link_name.parent.mkdir(parents=True, exist_ok=True)
-            if not link_name.exists():
-                self.link_function(self.full_path, link_name)
-                return True
-            return False
+            if self.deleted:  # essentially unlinking again deleted files
+                if link_name.exists():
+                    link_name.unlink()
+                    return True
+                return False
+            else:
+                link_name.parent.mkdir(parents=True, exist_ok=True)
+                if not link_name.exists():
+                    self.link_function(self.full_path, link_name)
+                    return True
+                return False
 
         def link_import(self):
             p = self.base_path / Folders.BY_IMPORT.value / self.start_time / self.old_file_name
@@ -456,16 +544,12 @@ class PhotoWoylie:
 
         def link_camera(self):
             name = ""
-
             if 'UserComment' in self.exif and self.exif['UserComment'] == "Screenshot":
                 name = "Screenshot"
-
             if 'Make' in self.exif:
                 name = self.exif['Make']
-
             if 'Model' in self.exif:
                 name += " " + self.exif['Model']
-
             if name != "":
                 self._link(self.base_path / Folders.BY_CAMERA.value / name.strip() / self.datetime_filename)
                 self.flags.append("📸")
@@ -474,6 +558,14 @@ class PhotoWoylie:
             for dt in ExifDateTime:
                 if dt.value in self.exif:
                     return self.exif[dt.value]
+
+        def delete_links(self):
+            for f in Folders:
+                if f.value.startswith('by-'):
+                    p = self.base_path / f.value
+                    for file in p.rglob(self.datetime_filename):
+                        #file.unlink()
+                        print("would delete: ", file)
 
     @classmethod
     def stop(cls, path):
@@ -489,58 +581,45 @@ class PhotoWoylie:
         print("The following extensions are build in:")
 
         print("Pictures:")
-        for ext in sorted(EXTENSIONS_PIC):
-            print("P: %s" % ext)
+        print("* " + " ".join(sorted(EXTENSIONS_PIC)))
 
-        print("Raw Formats")
-        for ext in sorted(EXTENSIONS_RAW):
-            print("Raw: %s" % ext)
+        print("Raw Formats:")
+        print("* " + " ".join(sorted(EXTENSIONS_RAW)))
 
-        print("Movie Formats")
-        for ext in sorted(EXTENSIONS_MOV):
-            print("M: %s" % ext)
+        print("Movie Formats:")
+        print("* " + " ".join(sorted(EXTENSIONS_MOV)))
 
-        print("since woylie depends on exiftool for metadata extraction check out https://exiftool.org/#supported ")
+        print("Ignoring Paths containing the following parts:")
+        print("* " + " ".join(sorted(IGNORE_PATH)))
 
 
 def main(argv):
     import argparse
 
     parser = argparse.ArgumentParser(
-        description='this is the PhotoWoylie tool! Organize your photos')
+        description='this is the PhotoWoylie tool! Organize your photos with metadata into subfolders')
 
-    parser.add_argument(
-        '--explain',
-        help='Explain what %(prog)s does (and stop)',
-        action='store_true')
-
-    parser.add_argument(
+    common_parser = argparse.ArgumentParser(add_help=False)
+    common_parser.add_argument(
         '--base-path', '-b',
         metavar='PATH',
         dest='base_path',
         required=True,
         help='woylie base path: all pictures and data is stored there')
 
-    parser.add_argument(
-        '--verbose', '-v',
-        help='verbose output',
-        action='count')
-
-    parser.add_argument(
-        '--show-extensions',
-        help='list extensions of files that will be sorted and quit',
-        dest='extensions'
+    subparsers = parser.add_subparsers(description="test desc", title="Sub commands", dest="command")
+    parser_import = subparsers.add_parser(
+        'import', help='import files to to library in base path', parents=[common_parser])
+    parser_rebuild = subparsers.add_parser(
+        'rebuild',
+        help='relink all by-folders (except by-import), this might be helpful if some options where wrongly set')
+    parser_remove = subparsers.add_parser(
+        'remove',
+        help='remove files that are were imported to the woylie lib')
+    parser_info = subparsers.add_parser(
+        'info',
+        help='print information about woylie and its dependencies'
     )
-
-    parser.add_argument(
-        '--create-stop', '-s',
-        metavar='PATH',
-        nargs='+',
-        help='create a file ".woylie_stop" that will prevent woylie to scan the directory and all subdirs',
-        dest='stop'
-    )
-
-    parser_import = parser.add_argument_group('Import', 'options for importing files')
 
     parser_import.add_argument(
         '--import-path', '-i',
@@ -552,13 +631,13 @@ def main(argv):
              'or on non reflink possible fs')
 
     parser_import.add_argument(
-        '--dump-exif',
+        '--dump-exif', '-d',
         dest='dump_exif',
         help='save exif information per import into the log directory',
         action='store_true')
 
     parser_import.add_argument(
-        '--use-symlinks',
+        '--use-symlinks', '-s',
         dest='symlink',
         help='use symlinks instead of hardlinks for linking the pictures in the by-XYZ folders',
         action='store_true'
@@ -586,29 +665,53 @@ def main(argv):
         parser.print_help()
         return 0
 
-    if pa.explain:
+    if pa.command == 'info':
         sys.stdout.write(__doc__)
+
+        PhotoWoylie.show_extensions()
+        print("")
+        parser.print_help()
         return 0
 
-    if pa.extensions:
-        PhotoWoylie.show_extensions()
+    #if pa.stop:
+    #    for path in pa.stop:
+    #        PhotoWoylie.stop(path)
 
-    if pa.stop:
-        for path in pa.stop:
-            PhotoWoylie.stop(path)
+    if pa.command == 'import':
+        if pa.base_path:
+            woylie = PhotoWoylie(
+                base_path=pa.base_path,
+                hardlink=not pa.symlink,
+                dump_exif=pa.dump_exif,
+                lang=pa.lang
+            )
+            if pa.add_ext:
+                woylie.add_extensions(pa.add_ext)
 
-    if pa.base_path:
-        woylie = PhotoWoylie(
-            base_path=pa.base_path,
-            hardlink=pa.symlink,
-            dump_exif=pa.dump_exif,
-            lang=pa.lang
-        )
-        if pa.add_ext:
-            woylie.add_extensions(pa.add_ext)
+            for path in pa.import_path:
+                woylie.import_files(path)
 
-        for path in pa.import_path:
-            woylie.import_files(path)
+    if pa.command == 'remove':
+        if pa.base_path:
+            woylie = PhotoWoylie(
+                base_path=pa.base_path,
+                hardlink=not pa.symlink,
+                dump_exif=pa.dump_exif,
+                lang=pa.lang
+            )
+
+        for path in pa.remove_path:
+            woylie.remove_files(path)
+
+    if pa.rebuild == 'rebuild':
+        if pa.base_path:
+            woylie = PhotoWoylie(
+                base_path=pa.base_path,
+                hardlink=not pa.symlink,
+                dump_exif=pa.dump_exif,
+                lang=pa.lang
+            )
+            woylie.rebuild()
 
     return 0
 
