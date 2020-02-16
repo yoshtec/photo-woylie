@@ -337,10 +337,17 @@ class PhotoWoylie:
         # TODO
 
         # delete by- folders
-        # go through all files in hash-lib
+        for folder in [Folders.BY_CAMERA.value, Folders.BY_TIME.value, Folders.BY_LOCATION.value]:
+            f = self.base_path / folder
+            f.rmdir()
+            f.mkdir()
 
-        #
-        pass
+        exiftool = ExifTool()
+        # go through all files in hash-lib
+        for h in "0123456789abcdef":
+            path = self.base_path / Folders.HASH_LIB.value / h
+            for p in path.iterdir():
+                self.rebuild_file(0)
 
     def file_digger(self, path: Path, recursive: bool = True):
         stop_file = path.joinpath(STOP_FILE)  # stop if there is a stop file
@@ -436,6 +443,47 @@ class PhotoWoylie:
                 self.count_existed += 1
                 trace.write("\t♻️ Existed\n")
                 print("♻️  Existed ")
+        except (RuntimeError, PermissionError) as e:
+            trace.write("❌ERROR %s\n\n" % e)
+            self.count_error += 1
+            print("❌  Error")
+        except Exception as e:
+            trace.write("❌ERROR %s\n\n" % e)
+            self.count_error += 1
+            print("❌  Error")
+            raise
+
+    def rebuild_file(self, filename: Path, trace, exiftool: ExifTool):
+        try:
+            print("▶️ File:", filename, end=' ')
+            trace.write("%s\t" % filename.absolute())
+
+            fi = self.FileImporter(
+                self.base_path, filename,
+                exiftool=exiftool,
+                copy_cmd=self.copy_cmd,
+                start_time=self.start_time,
+                hardlink=self.hardlink)
+
+            self.count_scanned += 1
+
+            fi.load_file()
+
+            trace.write("%s\t" % fi.full_path)
+
+            if self.link_date:
+                fi.link_datetime()
+            if self.link_cam:
+                fi.link_camera()
+            if self.link_gps:
+                fi.link_gps(self.osm)
+
+            if self.dump_exif:
+                self.exif_dump.append(fi.exif)
+
+            trace.write("✅OK!\t%s\n" % fi.flags)
+            print("✅  Rebuild: ", fi.flags)
+
         except (RuntimeError, PermissionError) as e:
             trace.write("❌ERROR %s\n\n" % e)
             self.count_error += 1
@@ -699,9 +747,8 @@ def main(argv):
                 dump_exif=pa.dump_exif,
                 lang=pa.lang
             )
-
-        for path in pa.remove_path:
-            woylie.remove_files(path)
+            for path in pa.remove_path:
+                woylie.remove_files(path)
 
     if pa.rebuild == 'rebuild':
         if pa.base_path:
