@@ -41,12 +41,32 @@ from pathlib import Path
 
 STOP_FILE = ".woylie_stop"
 
-EXTENSIONS_PIC = ['.ras', '.xwd', '.bmp', '.jpe', '.jpg', '.jpeg', '.xpm', '.ief', '.pbm', '.tif', '.tiff', '.gif',
-                  '.ppm', '.xbm', '.rgb', '.pgm', '.png', '.pnm', '.heic', '.heif']
-EXTENSIONS_MOV = ['.mov', '.mts', '.mp4', '.m4v']
-EXTENSIONS_RAW = ['.raw', '.arw']
+EXTENSIONS_PIC = [
+    ".ras",
+    ".xwd",
+    ".bmp",
+    ".jpe",
+    ".jpg",
+    ".jpeg",
+    ".xpm",
+    ".ief",
+    ".pbm",
+    ".tif",
+    ".tiff",
+    ".gif",
+    ".ppm",
+    ".xbm",
+    ".rgb",
+    ".pgm",
+    ".png",
+    ".pnm",
+    ".heic",
+    ".heif",
+]
+EXTENSIONS_MOV = [".mov", ".mts", ".mp4", ".m4v"]
+EXTENSIONS_RAW = [".raw", ".arw"]
 
-IGNORE_PATH = ['.AppleDouble', '.git', '.hg', '.svn', '.bzr']
+IGNORE_PATH = [".AppleDouble", ".git", ".hg", ".svn", ".bzr"]
 
 
 class Folders(enum.Enum):
@@ -74,10 +94,11 @@ def hash_file(filename):
     """
 
     import hashlib
+
     buffer = 65536
     file_hash = hashlib.sha256()
 
-    with open(filename, 'r+b') as f:
+    with open(filename, "r+b") as f:
         while True:
             data = f.read(buffer)
             if not data:
@@ -90,10 +111,8 @@ def check_call(args, ignore_return_code=False):
     cmd_str = " ".join(args)
     logging.info("Execute command: '%s' ", cmd_str)
     p = subprocess.Popen(
-        args,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True)
+        args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+    )
     stdout, stderr = p.communicate()
     if stdout:
         logging.debug(stdout)
@@ -106,6 +125,7 @@ def check_call(args, ignore_return_code=False):
 
 def get_copy_cmd():
     import platform
+
     if platform.system() == "Darwin":
         return ["cp", "-c"]
     elif platform.system() == "Windows":
@@ -116,7 +136,7 @@ def get_copy_cmd():
 
 
 class OSMResolver:
-    URL = 'https://nominatim.openstreetmap.org/reverse'
+    URL = "https://nominatim.openstreetmap.org/reverse"
 
     def __init__(self, file_name: Path, lang=None):
         print("🗺️  Geo data provided by OpenStreetmap:")
@@ -124,9 +144,11 @@ class OSMResolver:
         print("🗺️ -|> url: https://www.openstreetmap.org/copyright")
 
         self.lang = lang
-        self.file_name = file_name.with_suffix("." + lang + ".json") if lang else file_name
+        self.file_name = (
+            file_name.with_suffix("." + lang + ".json") if lang else file_name
+        )
         if file_name is not None and file_name.exists():
-            file = file_name.open('r')
+            file = file_name.open("r")
             self.cache = json.load(file)
             file.close()
         else:
@@ -135,9 +157,11 @@ class OSMResolver:
     def _resolve_cache(self, lat, lon):
         # TODO: this could be a lot smarter
         for item in self.cache:
-            if 'boundingbox' in item:
-                x = item['boundingbox']
-                if float(x[0]) < float(lat) < float(x[1]) and float(x[2]) < float(lon) < float(x[3]):
+            if "boundingbox" in item:
+                x = item["boundingbox"]
+                if float(x[0]) < float(lat) < float(x[1]) and float(x[2]) < float(
+                    lon
+                ) < float(x[3]):
                     return item
         return None
 
@@ -149,9 +173,9 @@ class OSMResolver:
             # Cache miss
             if js is None:
                 # https://nominatim.org/release-docs/develop/api/Reverse/
-                params = {'format': 'jsonv2', 'zoom': 12, 'lat': lat, 'lon': lon}
+                params = {"format": "jsonv2", "zoom": 12, "lat": lat, "lon": lon}
                 if self.lang:
-                    params['accept-language'] = self.lang
+                    params["accept-language"] = self.lang
 
                 r = requests.get(self.URL, params)
 
@@ -165,22 +189,22 @@ class OSMResolver:
         osmjs = self.resolve(lat, lon)
 
         if osmjs:
-            if 'address' in osmjs and 'country' in osmjs['address']:
-                if 'city' in osmjs['address']:
-                    return Path(osmjs['address']['country'], osmjs['address']['city'])
-                elif 'town' in osmjs['address']:
-                    return Path(osmjs['address']['country'], osmjs['address']['town'])
-                elif 'state' in osmjs['address']:
-                    return Path(osmjs['address']['country'], osmjs['address']['state'])
-                elif 'county' in osmjs['address']:
-                    return Path(osmjs['address']['country'], osmjs['address']['county'])
+            if "address" in osmjs and "country" in osmjs["address"]:
+                if "city" in osmjs["address"]:
+                    return Path(osmjs["address"]["country"], osmjs["address"]["city"])
+                elif "town" in osmjs["address"]:
+                    return Path(osmjs["address"]["country"], osmjs["address"]["town"])
+                elif "state" in osmjs["address"]:
+                    return Path(osmjs["address"]["country"], osmjs["address"]["state"])
+                elif "county" in osmjs["address"]:
+                    return Path(osmjs["address"]["country"], osmjs["address"]["county"])
                 else:
-                    Path(osmjs['address']['country'])
-            elif 'display_name' in osmjs:
-                return Path(osmjs['display_name'])
+                    Path(osmjs["address"]["country"])
+            elif "display_name" in osmjs:
+                return Path(osmjs["display_name"])
 
-        print("🗺️  Result for OpenStreetMap: lat, lon ", lat, lon)
-        print("🗺️  Query result: ", osmjs)
+        print(f"🗺️  Result for OpenStreetMap: lat={lat}, lon={lon}")
+        print(f"🗺️  Query result: {osmjs}")
         return Path("Unknown")
 
     def cache_write(self):
@@ -190,20 +214,32 @@ class OSMResolver:
 
 
 class ExifTool:
-    """ minimal wrapper for exiftool
+    """minimal wrapper for exiftool
     always returns -json strings
     """
+
     ENC = "utf-8"
 
     def __init__(self):
-        cmd = ['exiftool', '-stay_open', 'True', '-@', '-', "-common_args", "-json", "-n"]
+        cmd = [
+            "exiftool",
+            "-stay_open",
+            "True",
+            "-@",
+            "-",
+            "-common_args",
+            "-json",
+            "-n",
+            # TODO: maybe add "-b" to get binary data -  see https://exiftool.org/forum/index.php?topic=5586.0
+        ]
         self._xt = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            encoding=self.ENC)
+            encoding=self.ENC,
+        )
 
     def __del__(self):
         self.close()
@@ -221,7 +257,7 @@ class ExifTool:
         stdout = self._xt.stdout.fileno()
         while not result[-10:].strip().endswith(end):
             result += os.read(stdout, 4096)
-        return result.strip()[:-len(end)].decode(self.ENC)
+        return result.strip()[: -len(end)].decode(self.ENC)
 
     def close(self):
         if self._xt is not None:
@@ -232,9 +268,18 @@ class ExifTool:
 
 
 class PhotoWoylie:
-
-    def __init__(self, base_path, copy_cmd=None, hardlink=True, dump_exif=False, lang=None,
-                 link_date=True, link_import=True, link_cam=True, link_gps=True):
+    def __init__(
+        self,
+        base_path,
+        copy_cmd=None,
+        hardlink=True,
+        dump_exif=False,
+        lang=None,
+        link_date=True,
+        link_import=True,
+        link_cam=True,
+        link_gps=True,
+    ):
 
         self.base_path: Path = Path(base_path)
 
@@ -259,7 +304,9 @@ class PhotoWoylie:
 
         self.bootstrap_directory_structure()
 
-        self.osm = OSMResolver(self.base_path / Folders.DATA.value / "osm-cache.json", lang=lang)
+        self.osm = OSMResolver(
+            self.base_path / Folders.DATA.value / "osm-cache.json", lang=lang
+        )
 
         self.ignore_path = IGNORE_PATH
         self.extensions = EXTENSIONS_PIC + EXTENSIONS_RAW + EXTENSIONS_MOV
@@ -281,18 +328,20 @@ class PhotoWoylie:
         for f in Folders:
             path = self.base_path / f.value
             if not path.exists():
-                logging.info("Creating path: %s ", path)
+                logging.info(f"Creating path: {path}")
                 path.mkdir()
 
         for f in "0123456789abcdef":
             path = self.base_path / Folders.HASH_LIB.value / f
             if not path.exists():
-                logging.info("Creating path: %s ", path)
+                logging.info(f"Creating path: {path}")
                 path.mkdir()
 
     def import_files(self, import_path: os.PathLike, recursive: bool = True):
 
-        import_trace = self.base_path.joinpath(Folders.LOG.value, "import-" + self.start_time + ".log").open("w")
+        import_trace = self.base_path.joinpath(
+            Folders.LOG.value, f"import-{self.start_time}.log"
+        ).open("w")
 
         try:
             exiftool = ExifTool()
@@ -304,15 +353,22 @@ class PhotoWoylie:
             raise
         finally:
             print("-->")
-            print("ℹ️ scanned files: %s" % (self.count_imported + self.count_existed + self.count_error))
-            print("ℹ️ cloned files: %s" % self.count_imported)
-            print("ℹ️ already existed: %s" % self.count_existed)
-            print("ℹ️ files with errors: %s" % self.count_error)
-            logging.info("found files: %s, cloned files: %s, already existed: %s  ",
-                         self.count_imported + self.count_existed, self.count_imported, self.count_existed)
+            print(
+                f"ℹ️ scanned files: {self.count_imported + self.count_existed + self.count_error}"
+            )
+            print(f"ℹ️ cloned files: {self.count_imported}")
+            print(f"ℹ️ already existed: {self.count_existed}")
+            print(f"ℹ️ files with errors: {self.count_error}")
+            logging.info(
+                f"found files: {self.count_imported + self.count_existed}, "
+                f"cloned files: { self.count_imported}, "
+                f"already existed: {self.count_existed}"
+            )
 
             if self.dump_exif:
-                json_file = self.base_path.joinpath(Folders.LOG.value, "exif-" + self.start_time + ".json").open("w")
+                json_file = self.base_path.joinpath(
+                    Folders.LOG.value, f"exif-{self.start_time}.json"
+                ).open("w")
                 json.dump(self.exif_dump, json_file, indent=4)
 
             self.osm.cache_write()
@@ -321,9 +377,9 @@ class PhotoWoylie:
     def file_digger(self, path: Path, recursive: bool = True):
         stop_file = path.joinpath(STOP_FILE)  # stop if there is a stop file
         if stop_file.exists():
-            print("⏸️ Found a stop-file in: ", stop_file)
+            print(f"⏸️ Found a stop-file in: {stop_file}")
         elif path.parts[-1] in self.ignore_path:
-            print("⏸️ ignoring path: ", path)
+            print(f"⏸️ ignoring path: {path}")
         elif path.exists() and path.is_dir():
             for p in path.iterdir():
                 if p.is_file() and p.suffix.lower() in self.extensions:
@@ -334,15 +390,17 @@ class PhotoWoylie:
 
     def import_file(self, filename: Path, import_trace, exiftool: ExifTool):
         try:
-            print("▶️ File:", filename, end=' ')
+            print(f"▶️ File: {filename}", end=" ")
             import_trace.write("%s\t" % filename.absolute())
 
             fi = self.FileImporter(
-                self.base_path, filename,
+                self.base_path,
+                filename,
                 exiftool=exiftool,
                 copy_cmd=self.copy_cmd,
                 start_time=self.start_time,
-                hardlink=self.hardlink)
+                hardlink=self.hardlink,
+            )
 
             fi.import_file()
 
@@ -381,7 +439,15 @@ class PhotoWoylie:
             raise
 
     class FileImporter:
-        def __init__(self, base_path: Path, filename: Path, copy_cmd, exiftool: ExifTool, start_time: str, hardlink=True):
+        def __init__(
+            self,
+            base_path: Path,
+            filename: Path,
+            copy_cmd,
+            exiftool: ExifTool,
+            start_time: str,
+            hardlink=True,
+        ):
             self.flags = []
 
             self.exiftool = exiftool
@@ -390,15 +456,21 @@ class PhotoWoylie:
 
             self.old_file_path = filename
             self.old_file_name = filename.name
-            self.ext = filename.suffix.lower()  # make the extension lowercase for consistency
+            self.ext = (
+                filename.suffix.lower()
+            )  # make the extension lowercase for consistency
 
             self.file_hash = hash_file(filename)
 
             self.link_function = os.link if hardlink else os.symlink
             self.copy_cmd = copy_cmd if copy_cmd else get_copy_cmd()
 
-            self.full_path = self.base_path / Folders.HASH_LIB.value / self.file_hash[0:1] / \
-                             str(self.file_hash + self.ext)
+            self.full_path = (
+                self.base_path
+                / Folders.HASH_LIB.value
+                / self.file_hash[0:1]
+                / str(self.file_hash + self.ext)
+            )
 
             # TODO: sanity check
             self.datetime_filename = None
@@ -407,15 +479,21 @@ class PhotoWoylie:
 
         def import_file(self):
             if not any(self.full_path.parent.glob(self.file_hash + ".*")):
-                check_call(self.copy_cmd + [str(self.old_file_path), str(self.full_path)])
+                check_call(
+                    self.copy_cmd + [str(self.old_file_path), str(self.full_path)]
+                )
 
                 self.flags.append("#")
 
                 mstring = self.exiftool.execute(self.full_path)
                 self.exif = json.loads(mstring)[0]
 
-                self.datetime_filename = self.extract_date().replace(":", "-").replace(" ", "_")[0:19] \
-                                         + "_" + self.file_hash[0:8] + self.ext
+                self.datetime_filename = (
+                    self.extract_date().replace(":", "-").replace(" ", "_")[0:19]
+                    + "_"
+                    + self.file_hash[0:8]
+                    + self.ext
+                )
                 self.imported = True
 
         def _link(self, link_name: Path):
@@ -426,16 +504,30 @@ class PhotoWoylie:
             return False
 
         def link_import(self):
-            p = self.base_path / Folders.BY_IMPORT.value / self.start_time / self.old_file_name
+            p = (
+                self.base_path
+                / Folders.BY_IMPORT.value
+                / self.start_time
+                / self.old_file_name
+            )
             if not self._link(p):
-                p = self.base_path / Folders.BY_IMPORT.value / self.start_time / \
-                   Path(self.old_file_path.parts[-1] + self.old_file_name)
+                p = (
+                    self.base_path
+                    / Folders.BY_IMPORT.value
+                    / self.start_time
+                    / Path(self.old_file_path.parts[-1] + self.old_file_name)
+                )
                 self._link(p)
             self.flags.append("💾")
 
         def link_datetime(self):
-            self._link(self.base_path / Folders.BY_TIME.value / self.datetime_filename[0:4] /
-                       self.datetime_filename[5:7] / self.datetime_filename)
+            self._link(
+                self.base_path
+                / Folders.BY_TIME.value
+                / self.datetime_filename[0:4]
+                / self.datetime_filename[5:7]
+                / self.datetime_filename
+            )
             self.flags.append("🕘")
 
         def link_gps(self, osm: OSMResolver):
@@ -451,23 +543,33 @@ class PhotoWoylie:
 
             if lat is not None and lon is not None:
                 osmpath = osm.resolve_name(lat, lon)
-                self._link(self.base_path / Folders.BY_LOCATION.value / osmpath / self.datetime_filename)
+                self._link(
+                    self.base_path
+                    / Folders.BY_LOCATION.value
+                    / osmpath
+                    / self.datetime_filename
+                )
                 self.flags.append("🌍")
 
         def link_camera(self):
             name = ""
 
-            if 'UserComment' in self.exif and self.exif['UserComment'] == "Screenshot":
+            if "UserComment" in self.exif and self.exif["UserComment"] == "Screenshot":
                 name = "Screenshot"
 
-            if 'Make' in self.exif:
-                name = self.exif['Make']
+            if "Make" in self.exif:
+                name = self.exif["Make"]
 
-            if 'Model' in self.exif:
-                name += " " + self.exif['Model']
+            if "Model" in self.exif:
+                name += " " + self.exif["Model"]
 
             if name != "":
-                self._link(self.base_path / Folders.BY_CAMERA.value / name.strip() / self.datetime_filename)
+                self._link(
+                    self.base_path
+                    / Folders.BY_CAMERA.value
+                    / name.strip()
+                    / self.datetime_filename
+                )
                 self.flags.append("📸")
 
         def extract_date(self):
@@ -482,7 +584,7 @@ class PhotoWoylie:
             p = p / STOP_FILE
             if not p.exists():
                 p.touch(exist_ok=True)
-                print("created Stop File:", p)
+                print(f"created Stop File: {p}")
 
     @classmethod
     def show_extensions(cls):
@@ -500,83 +602,90 @@ class PhotoWoylie:
         for ext in sorted(EXTENSIONS_MOV):
             print("M: %s" % ext)
 
-        print("since woylie depends on exiftool for metadata extraction check out https://exiftool.org/#supported ")
+        print(
+            "since woylie depends on exiftool for metadata extraction check out https://exiftool.org/#supported "
+        )
 
 
 def main(argv):
     import argparse
 
     parser = argparse.ArgumentParser(
-        description='this is the PhotoWoylie tool! Organize your photos')
+        description="this is the PhotoWoylie tool! Organize your photos"
+    )
 
     parser.add_argument(
-        '--explain',
-        help='Explain what %(prog)s does (and stop)',
-        action='store_true')
+        "--explain", help="Explain what %(prog)s does (and stop)", action="store_true"
+    )
 
     parser.add_argument(
-        '--base-path', '-b',
-        metavar='PATH',
-        dest='base_path',
+        "--base-path",
+        "-b",
+        metavar="PATH",
+        dest="base_path",
         required=True,
-        help='woylie base path: all pictures and data is stored there')
+        help="woylie base path: all pictures and data is stored there",
+    )
+
+    parser.add_argument("--verbose", "-v", help="verbose output", action="count")
 
     parser.add_argument(
-        '--verbose', '-v',
-        help='verbose output',
-        action='count')
-
-    parser.add_argument(
-        '--show-extensions',
-        help='list extensions of files that will be sorted and quit',
-        dest='extensions'
+        "--show-extensions",
+        help="list extensions of files that will be sorted and quit",
+        dest="extensions",
     )
 
     parser.add_argument(
-        '--create-stop', '-s',
-        metavar='PATH',
-        nargs='+',
+        "--create-stop",
+        "-s",
+        metavar="PATH",
+        nargs="+",
         help='create a file ".woylie_stop" that will prevent woylie to scan the directory and all subdirs',
-        dest='stop'
+        dest="stop",
     )
 
-    parser_import = parser.add_argument_group('Import', 'options for importing files')
+    parser_import = parser.add_argument_group("Import", "options for importing files")
 
     parser_import.add_argument(
-        '--import-path', '-i',
-        metavar='PATH',
-        dest='import_path',
-        nargs='+',
-        help='Add the Pictures to the PhotoWoylie base Path.'
-             'Pictures will only be physically copied if across filesystem '
-             'or on non reflink possible fs')
-
-    parser_import.add_argument(
-        '--dump-exif',
-        dest='dump_exif',
-        help='save exif information per import into the log directory',
-        action='store_true')
-
-    parser_import.add_argument(
-        '--use-symlinks',
-        dest='symlink',
-        help='use symlinks instead of hardlinks for linking the pictures in the by-XYZ folders',
-        action='store_true'
+        "--import-path",
+        "-i",
+        metavar="PATH",
+        dest="import_path",
+        nargs="+",
+        help="Add the Pictures to the PhotoWoylie base Path."
+        "Pictures will only be physically copied if across filesystem "
+        "or on non reflink possible fs",
     )
 
     parser_import.add_argument(
-        '--language', '-l',
-        dest='lang',
-        metavar='LANG',
-        help='browser language code for request to OpenStreetMap. Defaults to local language of OSM'
+        "--dump-exif",
+        dest="dump_exif",
+        help="save exif information per import into the log directory",
+        action="store_true",
     )
 
     parser_import.add_argument(
-        '--include-extensions', '-e',
-        nargs='+',
-        dest='add_ext',
-        help='add extensions to include',
-        metavar='.ext'
+        "--use-symlinks",
+        dest="symlink",
+        help="use symlinks instead of hardlinks for linking the pictures in the by-XYZ folders",
+        action="store_true",
+    )
+
+    parser_import.add_argument(
+        "--language",
+        "-l",
+        dest="lang",
+        metavar="LANG",
+        help="browser language code for request to OpenStreetMap. Defaults to local language of OSM",
+    )
+
+    parser_import.add_argument(
+        "--include-extensions",
+        "-e",
+        nargs="+",
+        dest="add_ext",
+        help="add extensions to include",
+        metavar=".ext",
     )
 
     pa = parser.parse_args(argv[1:])
@@ -584,10 +693,6 @@ def main(argv):
     # safety net if no arguments are given call for help
     if len(sys.argv[1:]) == 0:
         parser.print_help()
-        return 0
-
-    if pa.explain:
-        sys.stdout.write(__doc__)
         return 0
 
     if pa.extensions:
@@ -602,7 +707,7 @@ def main(argv):
             base_path=pa.base_path,
             hardlink=pa.symlink,
             dump_exif=pa.dump_exif,
-            lang=pa.lang
+            lang=pa.lang,
         )
         if pa.add_ext:
             woylie.add_extensions(pa.add_ext)
