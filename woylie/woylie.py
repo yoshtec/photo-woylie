@@ -378,7 +378,9 @@ class PhotoWoylie:
             del exiftool
 
     def remove_files(self, delete_path: os.PathLike, recursive: bool = True):
-        delete_trace = self.base_path.joinpath(Folders.LOG.value, "delete-" + self.start_time + ".log").open("w")
+        delete_trace = self.base_path.joinpath(
+            Folders.LOG.value, "delete-" + self.start_time + ".log"
+        ).open("w")
 
         exiftool = ExifTool()
 
@@ -398,7 +400,11 @@ class PhotoWoylie:
         # TODO
 
         # delete by- folders
-        for folder in [Folders.BY_CAMERA.value, Folders.BY_TIME.value, Folders.BY_LOCATION.value]:
+        for folder in [
+            Folders.BY_CAMERA.value,
+            Folders.BY_TIME.value,
+            Folders.BY_LOCATION.value,
+        ]:
             f = self.base_path / folder
             f.rmdir()
             f.mkdir()
@@ -468,15 +474,17 @@ class PhotoWoylie:
 
     def import_file(self, filename: Path, trace, exiftool: ExifTool):
         try:
-            print("▶️ File:", filename, end=' ')
+            print("▶️ File:", filename, end=" ")
             trace.write("%s\t" % filename.absolute())
 
             fi = self.FileImporter(
-                self.base_path, filename,
+                self.base_path,
+                filename,
                 exiftool=exiftool,
                 copy_cmd=self.copy_cmd,
                 start_time=self.start_time,
-                hardlink=self.hardlink)
+                hardlink=self.hardlink,
+            )
 
             self.count_scanned += 1
 
@@ -518,15 +526,17 @@ class PhotoWoylie:
 
     def rebuild_file(self, filename: Path, trace, exiftool: ExifTool):
         try:
-            print("▶️ File:", filename, end=' ')
+            print("▶️ File:", filename, end=" ")
             trace.write("%s\t" % filename.absolute())
 
             fi = self.FileImporter(
-                self.base_path, filename,
+                self.base_path,
+                filename,
                 exiftool=exiftool,
                 copy_cmd=self.copy_cmd,
                 start_time=self.start_time,
-                hardlink=self.hardlink)
+                hardlink=self.hardlink,
+            )
 
             self.count_scanned += 1
 
@@ -721,10 +731,10 @@ class PhotoWoylie:
 
         def delete_links(self):
             for f in Folders:
-                if f.value.startswith('by-'):
+                if f.value.startswith("by-"):
                     p = self.base_path / f.value
                     for file in p.rglob(self.datetime_filename):
-                        #file.unlink()
+                        # file.unlink()
                         print("would delete: ", file)
 
     @classmethod
@@ -755,28 +765,25 @@ class PhotoWoylie:
 
 def commmon_options(fn):
     for decorator in (
-        (
-            click.option(
-                    "--symlink",
-                    help="use symlinks instead of hardlinks for linking the pictures in the by-XYZ folders",
-                    default=False,
-                    is_flag=True,
-            ),
-            click.option(
-                "--dump-exif",
-                "-d"
-                "dump_exif",
-                help="save exif information per import into the log directory",
-                default=False,
-                is_flag=True,
-            ),
-            click.option(
-                "--language",
-                "-l",
-                type=click.STRING,
-                help="browser language code for request to OpenStreetMap. Defaults to local language of OSM",
-            ),
-        )
+        click.option(
+            "--symlink",
+            help="use symlinks instead of hardlinks for linking the pictures in the by-XYZ folders",
+            default=False,
+            is_flag=True,
+        ),
+        click.option(
+            "--dump-exif",
+            "-d" "dump_exif",
+            help="save exif information per import into the log directory",
+            default=False,
+            is_flag=True,
+        ),
+        click.option(
+            "--language",
+            "-l",
+            type=click.STRING,
+            help="browser language code for request to OpenStreetMap. Defaults to local language of OSM",
+        ),
     ):
         fn = decorator(fn)
     return fn
@@ -873,11 +880,9 @@ def remove(
     dump_exif=False,
     language=None,
 ):
+    """remove files from the library"""
     woylie = PhotoWoylie(
-        base_path=base_path,
-        hardlink=not symlink,
-        dump_exif=dump_exif,
-        lang=language
+        base_path=base_path, hardlink=not symlink, dump_exif=dump_exif, lang=language
     )
     for path in remove_path:
         woylie.remove_files(path)
@@ -896,11 +901,9 @@ def rebuild(
     dump_exif=False,
     language=None,
 ):
+    """rebuild the library"""
     woylie = PhotoWoylie(
-        base_path=base_path,
-        hardlink=not symlink,
-        dump_exif=dump_exif,
-        lang=language
+        base_path=base_path, hardlink=not symlink, dump_exif=dump_exif, lang=language
     )
     woylie.rebuild()
 
