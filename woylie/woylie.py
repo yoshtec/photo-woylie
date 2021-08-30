@@ -33,11 +33,14 @@ import logging
 import enum
 import datetime
 import json
+
+import click as click
 import requests
 import subprocess
 from pathlib import Path
 
-# TODO: import multiprocessing # use parallel processing
+# TODO: P1: Set initial File Permissions and ownership straight
+# TODO: P3: import multiprocessing # use parallel processing
 
 STOP_FILE = ".woylie_stop"
 
@@ -230,7 +233,8 @@ class ExifTool:
             "-common_args",
             "-json",
             "-n",
-            # TODO: maybe add "-b" to get binary data -  see https://exiftool.org/forum/index.php?topic=5586.0
+            "-b",  # add "-b" to get binary data starts is bas64 encoded -
+            # see https://exiftool.org/forum/index.php?topic=5586.0
         ]
         self._xt = subprocess.Popen(
             cmd,
@@ -584,7 +588,7 @@ class PhotoWoylie:
             p = p / STOP_FILE
             if not p.exists():
                 p.touch(exist_ok=True)
-                print(f"created Stop File: {p}")
+                print(f"created Stop File: {p.absolute()}")
 
     @classmethod
     def show_extensions(cls):
@@ -592,131 +596,111 @@ class PhotoWoylie:
 
         print("Pictures:")
         for ext in sorted(EXTENSIONS_PIC):
-            print("P: %s" % ext)
+            print(f"P: {ext}")
 
         print("Raw Formats")
         for ext in sorted(EXTENSIONS_RAW):
-            print("Raw: %s" % ext)
+            print(f"Raw: {ext}")
 
         print("Movie Formats")
         for ext in sorted(EXTENSIONS_MOV):
-            print("M: %s" % ext)
+            print(f"M: {ext}")
 
         print(
             "since woylie depends on exiftool for metadata extraction check out https://exiftool.org/#supported "
         )
 
 
-def main(argv):
-    import argparse
+@click.group()
+@click.version_option()
+def cli():
+    "this is the PhotoWoylie tool! Organize your photos"
+    pass
 
-    parser = argparse.ArgumentParser(
-        description="this is the PhotoWoylie tool! Organize your photos"
+
+@cli.command()
+@click.argument(
+    "path",
+    nargs=-1,
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, allow_dash=False),
+    required=True,
+)
+def stop(path):
+    """disallow woylie to scan a directory and it's children by creating a {STOP_FILE} file"""
+    for p in path:
+        PhotoWoylie.stop(p)
+
+
+@cli.command()
+def list_extensions():
+    """list extensions of files that will be sorted and quit"""
+    PhotoWoylie.show_extensions()
+
+
+@cli.command()
+@click.argument(
+    "base-path",
+    #help="woylie base path: all pictures and data is stored there",
+    nargs=1,
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, allow_dash=False),
+    required=True,
+)
+@click.argument(
+    "import-path",
+    #help="Add the Pictures to the PhotoWoylie base Path. Pictures will only be physically copied if across filesystem "
+    #"or on non reflink possible fs",
+    nargs=-1,
+    type=click.Path(exists=True, file_okay=True, dir_okay=True, allow_dash=False),
+    required=True,
+)
+@click.option(
+    "--symlink",
+    help="use symlinks instead of hardlinks for linking the pictures in the by-XYZ folders",
+    default=False,
+    is_flag=True,
+)
+@click.option(
+    "--dump-exif",
+    "-d"
+    "dump_exif",
+    help="save exif information per import into the log directory",
+    default=False,
+    is_flag=True,
+)
+@click.option(
+    "--language",
+    "-l",
+    type=click.STRING,
+    help="browser language code for request to OpenStreetMap. Defaults to local language of OSM",
+)
+@click.option(
+    "-e",
+    "--include-extensions",
+    "extensions",
+    multiple=True,
+    type=click.STRING,
+    help="add extensions to include",
+)
+def import_files(
+    base_path,
+    import_path,
+    symlink=False,
+    dump_exif=False,
+    language=None,
+    extensions=None,
+):
+    """import images and movies to your library"""
+    woylie = PhotoWoylie(
+        base_path=base_path,
+        hardlink=symlink,
+        dump_exif=dump_exif,
+        lang=language,
     )
 
-    parser.add_argument(
-        "--explain", help="Explain what %(prog)s does (and stop)", action="store_true"
-    )
+    woylie.add_extensions(extensions)
 
-    parser.add_argument(
-        "--base-path",
-        "-b",
-        metavar="PATH",
-        dest="base_path",
-        required=True,
-        help="woylie base path: all pictures and data is stored there",
-    )
-
-    parser.add_argument("--verbose", "-v", help="verbose output", action="count")
-
-    parser.add_argument(
-        "--show-extensions",
-        help="list extensions of files that will be sorted and quit",
-        dest="extensions",
-    )
-
-    parser.add_argument(
-        "--create-stop",
-        "-s",
-        metavar="PATH",
-        nargs="+",
-        help='create a file ".woylie_stop" that will prevent woylie to scan the directory and all subdirs',
-        dest="stop",
-    )
-
-    parser_import = parser.add_argument_group("Import", "options for importing files")
-
-    parser_import.add_argument(
-        "--import-path",
-        "-i",
-        metavar="PATH",
-        dest="import_path",
-        nargs="+",
-        help="Add the Pictures to the PhotoWoylie base Path."
-        "Pictures will only be physically copied if across filesystem "
-        "or on non reflink possible fs",
-    )
-
-    parser_import.add_argument(
-        "--dump-exif",
-        dest="dump_exif",
-        help="save exif information per import into the log directory",
-        action="store_true",
-    )
-
-    parser_import.add_argument(
-        "--use-symlinks",
-        dest="symlink",
-        help="use symlinks instead of hardlinks for linking the pictures in the by-XYZ folders",
-        action="store_true",
-    )
-
-    parser_import.add_argument(
-        "--language",
-        "-l",
-        dest="lang",
-        metavar="LANG",
-        help="browser language code for request to OpenStreetMap. Defaults to local language of OSM",
-    )
-
-    parser_import.add_argument(
-        "--include-extensions",
-        "-e",
-        nargs="+",
-        dest="add_ext",
-        help="add extensions to include",
-        metavar=".ext",
-    )
-
-    pa = parser.parse_args(argv[1:])
-
-    # safety net if no arguments are given call for help
-    if len(sys.argv[1:]) == 0:
-        parser.print_help()
-        return 0
-
-    if pa.extensions:
-        PhotoWoylie.show_extensions()
-
-    if pa.stop:
-        for path in pa.stop:
-            PhotoWoylie.stop(path)
-
-    if pa.base_path:
-        woylie = PhotoWoylie(
-            base_path=pa.base_path,
-            hardlink=pa.symlink,
-            dump_exif=pa.dump_exif,
-            lang=pa.lang,
-        )
-        if pa.add_ext:
-            woylie.add_extensions(pa.add_ext)
-
-        for path in pa.import_path:
-            woylie.import_files(path)
-
-    return 0
-
+    for path in import_path:
+        woylie.import_files(path)
 
 if "__main__" == __name__:
-    sys.exit(main(sys.argv))
+    sys.exit(cli())

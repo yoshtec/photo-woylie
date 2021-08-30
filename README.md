@@ -58,3 +58,11 @@ Folders
 ```
 python3 PhotoWoylie.py -b ~/my-photos -i /path/to/photos /other/path/to/photos
 ```
+
+
+## Metadata
+
+Add all Metadata to an sqlite database to analyze better.
+```bash
+cat exif-20200126-155805.json | sqlite-utils insert exif.db exif - --alter --pk FileName 
+```
