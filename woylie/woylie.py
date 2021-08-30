@@ -753,10 +753,39 @@ class PhotoWoylie:
         print("* " + " ".join(sorted(IGNORE_PATH)))
 
 
+def commmon_options(fn):
+    for decorator in (
+        (
+            click.option(
+                    "--symlink",
+                    help="use symlinks instead of hardlinks for linking the pictures in the by-XYZ folders",
+                    default=False,
+                    is_flag=True,
+            ),
+            click.option(
+                "--dump-exif",
+                "-d"
+                "dump_exif",
+                help="save exif information per import into the log directory",
+                default=False,
+                is_flag=True,
+            ),
+            click.option(
+                "--language",
+                "-l",
+                type=click.STRING,
+                help="browser language code for request to OpenStreetMap. Defaults to local language of OSM",
+            ),
+        )
+    ):
+        fn = decorator(fn)
+    return fn
+
+
 @click.group()
 @click.version_option()
 def cli():
-    "this is the PhotoWoylie tool! Organize your photos"
+    """this is the PhotoWoylie tool! Organize your photos"""
     pass
 
 
@@ -768,7 +797,7 @@ def cli():
     required=True,
 )
 def stop(path):
-    """disallow woylie to scan a directory and it's children by creating a {STOP_FILE} file"""
+    """disallow woylie to scan a directory and it's children by creating a file"""
     for p in path:
         PhotoWoylie.stop(p)
 
@@ -782,39 +811,17 @@ def list_extensions():
 @cli.command()
 @click.argument(
     "base-path",
-    #help="woylie base path: all pictures and data is stored there",
     nargs=1,
     type=click.Path(exists=True, file_okay=False, dir_okay=True, allow_dash=False),
     required=True,
 )
 @click.argument(
     "import-path",
-    #help="Add the Pictures to the PhotoWoylie base Path. Pictures will only be physically copied if across filesystem "
-    #"or on non reflink possible fs",
     nargs=-1,
     type=click.Path(exists=True, file_okay=True, dir_okay=True, allow_dash=False),
     required=True,
 )
-@click.option(
-    "--symlink",
-    help="use symlinks instead of hardlinks for linking the pictures in the by-XYZ folders",
-    default=False,
-    is_flag=True,
-)
-@click.option(
-    "--dump-exif",
-    "-d"
-    "dump_exif",
-    help="save exif information per import into the log directory",
-    default=False,
-    is_flag=True,
-)
-@click.option(
-    "--language",
-    "-l",
-    type=click.STRING,
-    help="browser language code for request to OpenStreetMap. Defaults to local language of OSM",
-)
+@commmon_options
 @click.option(
     "-e",
     "--include-extensions",
@@ -834,7 +841,7 @@ def import_files(
     """import images and movies to your library"""
     woylie = PhotoWoylie(
         base_path=base_path,
-        hardlink=symlink,
+        hardlink=not symlink,
         dump_exif=dump_exif,
         lang=language,
     )
@@ -843,6 +850,60 @@ def import_files(
 
     for path in import_path:
         woylie.import_files(path)
+
+
+@cli.command()
+@click.argument(
+    "base-path",
+    nargs=1,
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, allow_dash=False),
+    required=True,
+)
+@click.argument(
+    "delete-path",
+    nargs=-1,
+    type=click.Path(exists=True, file_okay=True, dir_okay=True, allow_dash=False),
+    required=True,
+)
+@commmon_options
+def remove(
+    base_path,
+    remove_path,
+    symlink=False,
+    dump_exif=False,
+    language=None,
+):
+    woylie = PhotoWoylie(
+        base_path=base_path,
+        hardlink=not symlink,
+        dump_exif=dump_exif,
+        lang=language
+    )
+    for path in remove_path:
+        woylie.remove_files(path)
+
+
+@click.argument(
+    "base-path",
+    nargs=1,
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, allow_dash=False),
+    required=True,
+)
+@commmon_options
+def rebuild(
+    base_path,
+    symlink=False,
+    dump_exif=False,
+    language=None,
+):
+    woylie = PhotoWoylie(
+        base_path=base_path,
+        hardlink=not symlink,
+        dump_exif=dump_exif,
+        lang=language
+    )
+    woylie.rebuild()
+
 
 if "__main__" == __name__:
     sys.exit(cli())
