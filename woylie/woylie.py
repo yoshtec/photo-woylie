@@ -23,15 +23,13 @@ OpenStreetMap Nominatim is used for resolving locations from GPS metadata.
 https://nominatim.org/release-docs/develop/api/Reverse/
 
 """
-
+import base64
 import os
-import sys
 import logging
 import enum
 import datetime
 import json
-
-import click as click
+import sqlite_utils
 import requests
 import subprocess
 from pathlib import Path
@@ -67,6 +65,9 @@ EXTENSIONS_MOV = [".mov", ".mts", ".mp4", ".m4v"]
 EXTENSIONS_RAW = [".raw", ".arw"]
 
 IGNORE_PATH = [".AppleDouble", ".git", ".hg", ".svn", ".bzr"]
+
+# Ignore the following Tags from exif metadata:
+IGNORE_EXIF_TAGS = ["PreviewImage"]
 
 
 class Folders(enum.Enum):
@@ -212,6 +213,9 @@ class OSMResolver:
         json.dump(self.cache, file, indent=4)
         file.close()
 
+    def __del__(self):
+        self.cache_write()
+
 
 class ExifTool:
     """minimal wrapper for exiftool
@@ -230,7 +234,7 @@ class ExifTool:
             "-common_args",
             "-json",
             "-n",
-            "-b",  # add "-b" to get binary data starts is bas64 encoded -
+            "-b",  # add "-b" to get binary data starts with "bas64:"
             # see https://exiftool.org/forum/index.php?topic=5586.0
         ]
         self._xt = subprocess.Popen(
@@ -288,8 +292,7 @@ class PhotoWoylie:
 
         self.start_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 
-        if dump_exif:
-            self.exif_dump = []
+        self.exif_dump = []
         self.dump_exif = dump_exif
 
         self.count_imported = 0
@@ -309,6 +312,10 @@ class PhotoWoylie:
 
         self.osm = OSMResolver(
             self.base_path / Folders.DATA.value / "osm-cache.json", lang=lang
+        )
+
+        self.db = sqlite_utils.Database(
+            self.base_path / Folders.DATA.value / "metadata.db"
         )
 
         self.ignore_path = IGNORE_PATH
@@ -379,7 +386,7 @@ class PhotoWoylie:
 
     def remove_files(self, delete_path: os.PathLike, recursive: bool = True):
         delete_trace = self.base_path.joinpath(
-            Folders.LOG.value, "delete-" + self.start_time + ".log"
+            Folders.LOG.value, f"delete-{self.start_time}.log"
         ).open("w")
 
         exiftool = ExifTool()
@@ -391,13 +398,15 @@ class PhotoWoylie:
             raise
         finally:
             print("-->")
-            print("ℹ️ scanned files: %s" % self.count_scanned)
-            print("ℹ️ removed files: %s" % self.count_deleted)
-            print("ℹ️ files with errors: %s" % self.count_error)
+            print(f"ℹ️ scanned files: {self.count_scanned}")
+            print(f"ℹ️ removed files: {self.count_deleted}")
+            print(f"ℹ️ files with errors: {self.count_error}")
             del exiftool
 
     def rebuild(self):
-        # TODO
+        rebuild_trace = self.base_path.joinpath(
+            Folders.LOG.value, f"rebuild-{self.start_time}.log"
+        ).open("w")
 
         # delete by- folders
         for folder in [
@@ -414,7 +423,7 @@ class PhotoWoylie:
         for h in "0123456789abcdef":
             path = self.base_path / Folders.HASH_LIB.value / h
             for p in path.iterdir():
-                self.rebuild_file(0)
+                self.rebuild_file(p, exiftool=exiftool, trace=rebuild_trace)
 
     def file_digger(self, path: Path, recursive: bool = True):
         stop_file = path.joinpath(STOP_FILE)  # stop if there is a stop file
@@ -507,6 +516,17 @@ class PhotoWoylie:
                 if self.dump_exif:
                     self.exif_dump.append(fi.exif)
 
+                for k in fi.exif:
+                    if isinstance(fi.exif[k], str) and fi.exif[k].startswith("base64:"):
+                        fi.exif[k] = base64.b64decode(fi.exif[k][7:])
+
+                self.db["exif"].insert_all(
+                    [fi.exif],
+                    pk="FileName",
+                    batch_size=10,
+                    alter=True,
+                )
+
                 trace.write("✅OK!\t%s\n" % fi.flags)
                 print("✅  Imported: ", fi.flags)
 
@@ -514,6 +534,11 @@ class PhotoWoylie:
                 self.count_existed += 1
                 trace.write("\t♻️ Existed\n")
                 print("♻️  Existed ")
+
+            self.db["originals"].insert_all(
+                [fi.origin], pk=["FileHash", "OriginalPath"], alter=True, ignore=True
+            )
+
         except (RuntimeError, PermissionError) as e:
             trace.write("❌ERROR %s\n\n" % e)
             self.count_error += 1
@@ -603,6 +628,15 @@ class PhotoWoylie:
 
             # TODO: sanity check
             self.datetime_filename = None
+
+            self.origin = dict()
+            self.origin["FileHash"] = self.file_hash
+            self.origin["FileName"] = self.full_path.name
+            self.origin["Extension"] = self.full_path.suffix
+            self.origin["OriginalPath"] = str(self.old_file_path)
+            self.origin["OriginalFile"] = self.old_file_path.name
+            self.origin["ImportedAt"] = None
+
             self.exif = None
             self.imported = False
 
@@ -616,6 +650,10 @@ class PhotoWoylie:
 
                 self.flags.append("#")
                 self._load_exif()
+                # Add original Filename as Metadata
+                self.exif["OriginalPath"] = str(self.old_file_path)
+                self.exif["OriginalFile"] = self.old_file_path.name
+                self.origin["ImportedAt"] = self.start_time
                 self.imported = True
 
         def delete_file(self):
@@ -640,6 +678,11 @@ class PhotoWoylie:
                 + self.file_hash[0:8]
                 + self.ext
             )
+
+            for tag in IGNORE_EXIF_TAGS:
+                if tag in self.exif:
+                    del self.exif[tag]
+
             self.imported = True
 
         def _link(self, link_name: Path):
@@ -761,152 +804,3 @@ class PhotoWoylie:
 
         print("Ignoring Paths containing the following parts:")
         print("* " + " ".join(sorted(IGNORE_PATH)))
-
-
-def commmon_options(fn):
-    for decorator in (
-        click.option(
-            "--symlink",
-            help="use symlinks instead of hardlinks for linking the pictures in the by-XYZ folders",
-            default=False,
-            is_flag=True,
-        ),
-        click.option(
-            "--dump-exif",
-            "-d" "dump_exif",
-            help="save exif information per import into the log directory",
-            default=False,
-            is_flag=True,
-        ),
-        click.option(
-            "--language",
-            "-l",
-            type=click.STRING,
-            help="browser language code for request to OpenStreetMap. Defaults to local language of OSM",
-        ),
-    ):
-        fn = decorator(fn)
-    return fn
-
-
-@click.group()
-@click.version_option()
-def cli():
-    """this is the PhotoWoylie tool! Organize your photos"""
-    pass
-
-
-@cli.command()
-@click.argument(
-    "path",
-    nargs=-1,
-    type=click.Path(exists=True, file_okay=False, dir_okay=True, allow_dash=False),
-    required=True,
-)
-def stop(path):
-    """disallow woylie to scan a directory and it's children by creating a file"""
-    for p in path:
-        PhotoWoylie.stop(p)
-
-
-@cli.command()
-def list_extensions():
-    """list extensions of files that will be sorted and quit"""
-    PhotoWoylie.show_extensions()
-
-
-@cli.command()
-@click.argument(
-    "base-path",
-    nargs=1,
-    type=click.Path(exists=True, file_okay=False, dir_okay=True, allow_dash=False),
-    required=True,
-)
-@click.argument(
-    "import-path",
-    nargs=-1,
-    type=click.Path(exists=True, file_okay=True, dir_okay=True, allow_dash=False),
-    required=True,
-)
-@commmon_options
-@click.option(
-    "-e",
-    "--include-extensions",
-    "extensions",
-    multiple=True,
-    type=click.STRING,
-    help="add extensions to include",
-)
-def import_files(
-    base_path,
-    import_path,
-    symlink=False,
-    dump_exif=False,
-    language=None,
-    extensions=None,
-):
-    """import images and movies to your library"""
-    woylie = PhotoWoylie(
-        base_path=base_path,
-        hardlink=not symlink,
-        dump_exif=dump_exif,
-        lang=language,
-    )
-
-    woylie.add_extensions(extensions)
-
-    for path in import_path:
-        woylie.import_files(path)
-
-
-@cli.command()
-@click.argument(
-    "base-path",
-    nargs=1,
-    type=click.Path(exists=True, file_okay=False, dir_okay=True, allow_dash=False),
-    required=True,
-)
-@click.argument(
-    "delete-path",
-    nargs=-1,
-    type=click.Path(exists=True, file_okay=True, dir_okay=True, allow_dash=False),
-    required=True,
-)
-@commmon_options
-def remove(
-    base_path,
-    remove_path,
-    symlink=False,
-    dump_exif=False,
-    language=None,
-):
-    """remove files from the library"""
-    woylie = PhotoWoylie(
-        base_path=base_path, hardlink=not symlink, dump_exif=dump_exif, lang=language
-    )
-    for path in remove_path:
-        woylie.remove_files(path)
-
-
-@click.argument(
-    "base-path",
-    nargs=1,
-    type=click.Path(exists=True, file_okay=False, dir_okay=True, allow_dash=False),
-    required=True,
-)
-@commmon_options
-def rebuild(
-    base_path,
-    symlink=False,
-    dump_exif=False,
-    language=None,
-):
-    """rebuild the library"""
-    woylie = PhotoWoylie(
-        base_path=base_path, hardlink=not symlink, dump_exif=dump_exif, lang=language
-    )
-    woylie.rebuild()
-
-
-if "__main__" == __name__:
-    sys.exit(cli())
