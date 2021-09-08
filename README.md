@@ -66,23 +66,3 @@ Add all Metadata to an sqlite database to analyze better.
 ```bash
 cat exif-20200126-155805.json | sqlite-utils insert exif.db exif - --alter --pk FileName 
 ```
-
-```sqlite
-select *
- from exif 
-where Face1Position not null
-order by make, Model;
-
-select count(FileName) as C, Make, Model, SerialNumber
-from exif 
-group by Make, Model, SerialNumber
-order by C;
-
-select count(FileName) as c, make, model, Left(ThumbnailImage,10)
-from exif 
-group by Make, Model;
-
-
-select count(*),  sum(length(ThumbnailImage)) * 8 / 1024 / 1024  as Thsizemb , sum(length(PreviewImage)) * 8 / 1024 / 1024  as Psizemb  from exif where ThumbnailImage is not NULL;
-
-```

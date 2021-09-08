@@ -32,12 +32,16 @@ import json
 import sqlite_utils
 import requests
 import subprocess
+import hashlib
+import platform
 from pathlib import Path
 
 # TODO: P1: Set initial File Permissions and ownership straight
 # TODO: P3: import multiprocessing # use parallel processing
 
+DATABASE_FILE = "metadata.db"
 STOP_FILE = ".woylie_stop"
+ENC = "utf-8"
 
 EXTENSIONS_PIC = [
     ".ras",
@@ -67,10 +71,21 @@ EXTENSIONS_RAW = [".raw", ".arw"]
 IGNORE_PATH = [".AppleDouble", ".git", ".hg", ".svn", ".bzr"]
 
 # Ignore the following Tags from exif metadata:
-IGNORE_EXIF_TAGS = ["PreviewImage"]
+IGNORE_EXIF_TAGS = [
+    "PreviewImage",
+    "Directory",
+    "FileAccessDate",
+    "FileInodeChangeDate",
+    "FilePermissions",
+    "FileTypeExtension",
+]
 
 
 class Folders(enum.Enum):
+    """
+    Folders of the library
+    """
+
     LOG = "log"
     DATA = "data"
     HASH_LIB = "hash-lib"
@@ -81,6 +96,10 @@ class Folders(enum.Enum):
 
 
 class ExifDateTime(enum.Enum):
+    """
+    Date Time options to extract the exact Date and Time of a File
+    """
+
     DATETIME_ORG = "DateTimeOriginal"
     DATETIME_CREATED = "CreateDate"
     DATETIME_GPS = "GPSDateTime"
@@ -89,12 +108,28 @@ class ExifDateTime(enum.Enum):
     DATETIME_FILE_MODIFY = "FileModifyDate"
 
 
+class Tables(enum.Enum):
+    """
+    Constants like table names for interaction with the metadata database
+    """
+
+    TABLE_EXIF = "exif"
+    TABLE_FILES = "files"
+
+
+class Columns(enum.Enum):
+    HASH = "file_hash"
+    EXTENSION = "extension"
+    IMPORTED_AT = "importedAt"
+    IMPORTED = "imported"
+    IGNORE = "ignore"
+    DELETED = "deleted"
+
+
 def hash_file(filename):
     """
     Reads a File and returns the sha256 hex digest of the file
     """
-
-    import hashlib
 
     buffer = 65536
     file_hash = hashlib.sha256()
@@ -125,8 +160,6 @@ def check_call(args, ignore_return_code=False):
 
 
 def get_copy_cmd():
-    import platform
-
     if platform.system() == "Darwin":
         return ["cp", "-c"]
     elif platform.system() == "Windows":
@@ -145,9 +178,7 @@ class OSMResolver:
         print("🗺️ -|> url: https://www.openstreetmap.org/copyright")
 
         self.lang = lang
-        self.file_name = (
-            file_name.with_suffix("." + lang + ".json") if lang else file_name
-        )
+        self.file_name = file_name.with_suffix(f".{lang}.json") if lang else file_name
         if file_name is not None and file_name.exists():
             file = file_name.open("r")
             self.cache = json.load(file)
@@ -200,7 +231,7 @@ class OSMResolver:
                 elif "county" in osmjs["address"]:
                     return Path(osmjs["address"]["country"], osmjs["address"]["county"])
                 else:
-                    Path(osmjs["address"]["country"])
+                    return Path(osmjs["address"]["country"])
             elif "display_name" in osmjs:
                 return Path(osmjs["display_name"])
 
@@ -218,11 +249,9 @@ class OSMResolver:
 
 
 class ExifTool:
-    """minimal wrapper for exiftool
-    always returns -json strings
     """
-
-    ENC = "utf-8"
+    minimal wrapper for exiftool always returns -json strings
+    """
 
     def __init__(self):
         cmd = [
@@ -233,9 +262,10 @@ class ExifTool:
             "-",
             "-common_args",
             "-json",
-            "-n",
-            "-b",  # add "-b" to get binary data starts with "bas64:"
-            # see https://exiftool.org/forum/index.php?topic=5586.0
+            "-n",  # No print conversion
+            "-b",  # get binary data starts with "base64:" see https://exiftool.org/forum/index.php?topic=5586.0
+            # "-u",  # Find unknown tags
+            # "-U",  # also find binary unknown tags
         ]
         self._xt = subprocess.Popen(
             cmd,
@@ -243,7 +273,7 @@ class ExifTool:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            encoding=self.ENC,
+            encoding=ENC,
         )
 
     def __del__(self):
@@ -252,17 +282,19 @@ class ExifTool:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
-    def execute(self, file):
+    def execute(self, file, find_unknown=False):
         end = b"{ready}"
 
-        self._xt.stdin.write("\n" + str(file) + "\n-execute\n")
+        unknown = "\n-u\n-U" if find_unknown else ""
+
+        self._xt.stdin.write("\n" + str(file) + unknown + "\n-execute\n")
         self._xt.stdin.flush()
 
         result = b""
         stdout = self._xt.stdout.fileno()
         while not result[-10:].strip().endswith(end):
             result += os.read(stdout, 4096)
-        return result.strip()[: -len(end)].decode(self.ENC)
+        return result.strip()[: -len(end)].decode(ENC)
 
     def close(self):
         if self._xt is not None:
@@ -300,6 +332,7 @@ class PhotoWoylie:
         self.count_error = 0
         self.count_scanned = 0
         self.count_deleted = 0
+        self.count_ignored = 0
 
         self.link_import = link_import
         self.link_date = link_date
@@ -315,18 +348,11 @@ class PhotoWoylie:
         )
 
         self.db = sqlite_utils.Database(
-            self.base_path / Folders.DATA.value / "metadata.db"
+            self.base_path / Folders.DATA.value / DATABASE_FILE
         )
 
         self.ignore_path = IGNORE_PATH
         self.extensions = EXTENSIONS_PIC + EXTENSIONS_RAW + EXTENSIONS_MOV
-
-    def add_extensions(self, exts):
-        for e in exts:
-            if not e.startswith("."):
-                self.extensions.append("." + e.lower())
-            else:
-                self.extensions.append(e.lower())
 
     def bootstrap_directory_structure(self):
         if not self.base_path.exists():
@@ -347,6 +373,13 @@ class PhotoWoylie:
                 logging.info(f"Creating path: {path}")
                 path.mkdir()
 
+    def add_extensions(self, extensions):
+        for e in extensions:
+            if not e.startswith("."):
+                self.extensions.append("." + e.lower())
+            else:
+                self.extensions.append(e.lower())
+
     def import_files(self, import_path: os.PathLike, recursive: bool = True):
 
         import_trace = self.base_path.joinpath(
@@ -363,16 +396,16 @@ class PhotoWoylie:
             raise
         finally:
             print("-->")
-            print(
-                f"ℹ️ scanned files: {self.count_imported + self.count_existed + self.count_error}"
-            )
+            print(f"ℹ️ scanned files: {self.count_scanned}")
             print(f"ℹ️ cloned files: {self.count_imported}")
             print(f"ℹ️ already existed: {self.count_existed}")
+            print(f"ℹ️ ignored: {self.count_ignored}")
             print(f"ℹ️ files with errors: {self.count_error}")
             logging.info(
-                f"found files: {self.count_imported + self.count_existed}, "
+                f"found files: {self.count_scanned}, "
                 f"cloned files: { self.count_imported}, "
                 f"already existed: {self.count_existed}"
+                f"ignored: {self.count_ignored}"
             )
 
             if self.dump_exif:
@@ -457,6 +490,10 @@ class PhotoWoylie:
 
             fi.delete_file()
 
+            self.db[Tables.TABLE_FILES.value].insert_all(
+                [fi.get_origin()], pk=Columns.HASH.value, upsert=True, alter=True
+            )
+
             if fi.deleted:
                 self.count_deleted += 1
 
@@ -465,7 +502,7 @@ class PhotoWoylie:
                 fi.delete_links()
 
                 trace.write("Removed!\t%s\n" % fi.flags)
-                print("  Removed: ", fi.flags)
+                print("🗑️  Removed: ", fi.flags)
 
             else:
                 trace.write("\t♻️ not existing\n")
@@ -480,6 +517,17 @@ class PhotoWoylie:
             self.count_error += 1
             print("❌  Error")
             raise
+
+    def check_exist_or_ignore(self, file_hash: str):
+        try:
+            item = self.db[Tables.TABLE_FILES.value].get(file_hash)
+            if item[Columns.IMPORTED.value]:
+                return 1
+            if item[Columns.IGNORE.value]:
+                return 2
+            return 3
+        except sqlite_utils.db.NotFoundError as e:
+            return 0
 
     def import_file(self, filename: Path, trace, exiftool: ExifTool):
         try:
@@ -497,9 +545,11 @@ class PhotoWoylie:
 
             self.count_scanned += 1
 
-            fi.import_file()
+            status = self.check_exist_or_ignore(fi.file_hash)
+            if status == 0:
+                fi.import_file()
 
-            if fi.imported:
+                # if fi.imported:
                 self.count_imported += 1
 
                 trace.write("%s\t" % fi.full_path)
@@ -516,13 +566,17 @@ class PhotoWoylie:
                 if self.dump_exif:
                     self.exif_dump.append(fi.exif)
 
+                self.db[Tables.TABLE_FILES.value].insert_all(
+                    [fi.get_origin()], pk=Columns.HASH.value, alter=True
+                )
+
                 for k in fi.exif:
                     if isinstance(fi.exif[k], str) and fi.exif[k].startswith("base64:"):
                         fi.exif[k] = base64.b64decode(fi.exif[k][7:])
 
-                self.db["exif"].insert_all(
+                self.db[Tables.TABLE_EXIF.value].insert_all(
                     [fi.exif],
-                    pk="FileName",
+                    pk=Columns.HASH.value,
                     batch_size=10,
                     alter=True,
                 )
@@ -530,14 +584,14 @@ class PhotoWoylie:
                 trace.write("✅OK!\t%s\n" % fi.flags)
                 print("✅  Imported: ", fi.flags)
 
-            else:
+            elif status == 1:
                 self.count_existed += 1
                 trace.write("\t♻️ Existed\n")
                 print("♻️  Existed ")
-
-            self.db["originals"].insert_all(
-                [fi.origin], pk=["FileHash", "OriginalPath"], alter=True, ignore=True
-            )
+            else:
+                self.count_ignored += 1
+                trace.write("\t💤 Ignored\n")
+                print("💤 Ignored ")
 
         except (RuntimeError, PermissionError) as e:
             trace.write("❌ERROR %s\n\n" % e)
@@ -629,18 +683,25 @@ class PhotoWoylie:
             # TODO: sanity check
             self.datetime_filename = None
 
-            self.origin = dict()
-            self.origin["FileHash"] = self.file_hash
-            self.origin["FileName"] = self.full_path.name
-            self.origin["Extension"] = self.full_path.suffix
-            self.origin["OriginalPath"] = str(self.old_file_path)
-            self.origin["OriginalFile"] = self.old_file_path.name
-            self.origin["ImportedAt"] = None
-
             self.exif = None
             self.imported = False
-
+            self.ignore = False
             self.deleted = False
+
+        def get_origin(self) -> dict:
+            origin = dict()
+            origin[Columns.HASH.value] = self.file_hash
+            origin[Columns.EXTENSION.value] = self.full_path.suffix
+            # origin["OriginalPath"] = str(self.old_file_path)
+            # origin["OriginalFile"] = self.old_file_path.name
+            origin[Columns.IMPORTED_AT.value] = (
+                self.start_time if self.imported else None
+            )
+            origin[Columns.IMPORTED.value] = self.imported
+            origin[Columns.IGNORE.value] = self.ignore
+            origin[Columns.DELETED.value] = self.deleted
+
+            return origin
 
         def import_file(self):
             if not any(self.full_path.parent.glob(self.file_hash + ".*")):
@@ -651,17 +712,22 @@ class PhotoWoylie:
                 self.flags.append("#")
                 self._load_exif()
                 # Add original Filename as Metadata
-                self.exif["OriginalPath"] = str(self.old_file_path)
-                self.exif["OriginalFile"] = self.old_file_path.name
-                self.origin["ImportedAt"] = self.start_time
+                # self.exif["OriginalPath"] = str(self.old_file_path)
+                # self.exif["OriginalFile"] = self.old_file_path.name
+                # self.origin["ImportedAt"] = self.start_time
                 self.imported = True
 
         def delete_file(self):
             if self.full_path.exists():
-                self.flags.append("-")
+                self.flags.append("🗑️")
                 self._load_exif()
                 self.full_path.unlink()
                 self.deleted = True
+            self.ignore = True
+
+        def ignore_file(self):
+            self.ignore = True
+            self.flags.append("I")
 
         def load_file(self):
             if self.full_path.exists():
@@ -682,6 +748,8 @@ class PhotoWoylie:
             for tag in IGNORE_EXIF_TAGS:
                 if tag in self.exif:
                     del self.exif[tag]
+
+            self.exif[Columns.HASH.value] = self.file_hash
 
             self.imported = True
 
@@ -804,3 +872,10 @@ class PhotoWoylie:
 
         print("Ignoring Paths containing the following parts:")
         print("* " + " ".join(sorted(IGNORE_PATH)))
+
+    @classmethod
+    def check_prerequisites(cls):
+        import shutil
+
+        if not shutil.which("exiftool"):
+            return False

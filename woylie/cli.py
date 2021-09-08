@@ -64,7 +64,7 @@ def list_extensions():
 @click.argument(
     "base-path",
     nargs=1,
-    type=click.Path(exists=True, file_okay=False, dir_okay=True, allow_dash=False),
+    type=click.Path(file_okay=False, dir_okay=True, allow_dash=False),
     required=True,
 )
 @click.argument(
