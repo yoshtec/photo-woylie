@@ -16,6 +16,7 @@ Folders:
  - by-time - Photos linked after the Year and time
  - by-camera - Photos sorted after the camera model.
  - by-import - Photos by import run - contains the original file names
+ - by-location - Locations where Pictures where taken
 
 woylie depends on exiftool for reading metadata: check out https://exiftool.org/#supported
 
@@ -78,6 +79,7 @@ IGNORE_EXIF_TAGS = [
     "FileInodeChangeDate",
     "FilePermissions",
     "FileTypeExtension",
+    "ProfileDescriptionML*",
 ]
 
 
@@ -259,7 +261,7 @@ class ExifTool:
     minimal wrapper for exiftool always returns -json strings
     """
 
-    def __init__(self):
+    def __init__(self, ignore_tags=IGNORE_EXIF_TAGS):
         cmd = [
             "exiftool",
             "-stay_open",
@@ -273,6 +275,9 @@ class ExifTool:
             # "-u",  # Find unknown tags
             # "-U",  # also find binary unknown tags
         ]
+        for tag in ignore_tags:
+            cmd.append(f"--\"{tag}\"")
+
         self._xt = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
@@ -751,6 +756,7 @@ class PhotoWoylie:
                 + self.ext
             )
 
+            # still necessary for deleting exifTool immanent information
             for tag in IGNORE_EXIF_TAGS:
                 if tag in self.exif:
                     del self.exif[tag]
