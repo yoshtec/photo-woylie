@@ -224,6 +224,10 @@ class OSMResolver:
             if "address" in osmjs and "country" in osmjs["address"]:
                 if "city" in osmjs["address"]:
                     return Path(osmjs["address"]["country"], osmjs["address"]["city"])
+                elif "village" in osmjs["address"]:
+                    return Path(osmjs["address"]["country"], osmjs["address"]["village"])
+                elif "municipality" in osmjs["address"]:
+                    return Path(osmjs["address"]["country"], osmjs["address"]["municipality"])
                 elif "town" in osmjs["address"]:
                     return Path(osmjs["address"]["country"], osmjs["address"]["town"])
                 elif "state" in osmjs["address"]:
@@ -231,6 +235,8 @@ class OSMResolver:
                 elif "county" in osmjs["address"]:
                     return Path(osmjs["address"]["country"], osmjs["address"]["county"])
                 else:
+                    print(f"🗺️  Result for OpenStreetMap: lat={lat}, lon={lon}")
+                    print(f"🗺️  Query result: {osmjs}")
                     return Path(osmjs["address"]["country"])
             elif "display_name" in osmjs:
                 return Path(osmjs["display_name"])
