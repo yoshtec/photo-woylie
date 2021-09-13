@@ -25,6 +25,7 @@ https://nominatim.org/release-docs/develop/api/Reverse/
 
 """
 import base64
+import fnmatch
 import os
 import logging
 import enum
@@ -70,6 +71,7 @@ EXTENSIONS_MOV = [".mov", ".mts", ".mp4", ".m4v"]
 EXTENSIONS_RAW = [".raw", ".arw"]
 
 IGNORE_PATH = [".AppleDouble", ".git", ".hg", ".svn", ".bzr"]
+IGNORE_FILE_PATTERN = ["._*"]
 
 # Ignore the following Tags from exif metadata:
 IGNORE_EXIF_TAGS = [
@@ -102,11 +104,12 @@ class ExifDateTime(enum.Enum):
     Date Time options to extract the exact Date and Time of a File
     """
 
-    DATETIME_ORG = "DateTimeOriginal"
-    DATETIME_CREATED = "CreateDate"
+    DATETIME_ORG = "DateTimeOriginal"  # Local DateTime
+    DATETIME_CREATED = "CreateDate"  # Local DateTime
     DATETIME_GPS = "GPSDateTime"
     DATETIME_MOD = "ModifyDate"
-    DATETIME_SONY = "SonyDateTime"
+    DATETIME_SONY = "SonyDateTime"  # Contains local DateTime
+    DATETIME_SONY2 = "SonyDateTime2"  # Contains UTC Time
     DATETIME_FILE_MODIFY = "FileModifyDate"
 
 
@@ -161,9 +164,9 @@ def check_call(args, ignore_return_code=False):
     return stdout
 
 
-def get_copy_cmd():
+def get_copy_cmd(retry=False):
     if platform.system() == "Darwin":
-        return ["cp", "-c"]
+        return ["cp"] if retry else ["cp", "-c"]
     elif platform.system() == "Windows":
         print("WARN: Windows Support currently not implemented")
         return ["copy"]  # Windows Use Junctions or Links?
@@ -227,9 +230,13 @@ class OSMResolver:
                 if "city" in osmjs["address"]:
                     return Path(osmjs["address"]["country"], osmjs["address"]["city"])
                 elif "village" in osmjs["address"]:
-                    return Path(osmjs["address"]["country"], osmjs["address"]["village"])
+                    return Path(
+                        osmjs["address"]["country"], osmjs["address"]["village"]
+                    )
                 elif "municipality" in osmjs["address"]:
-                    return Path(osmjs["address"]["country"], osmjs["address"]["municipality"])
+                    return Path(
+                        osmjs["address"]["country"], osmjs["address"]["municipality"]
+                    )
                 elif "town" in osmjs["address"]:
                     return Path(osmjs["address"]["country"], osmjs["address"]["town"])
                 elif "state" in osmjs["address"]:
@@ -276,7 +283,7 @@ class ExifTool:
             # "-U",  # also find binary unknown tags
         ]
         for tag in ignore_tags:
-            cmd.append(f"--\"{tag}\"")
+            cmd.append(f'--"{tag}"')
 
         self._xt = subprocess.Popen(
             cmd,
@@ -319,7 +326,6 @@ class PhotoWoylie:
     def __init__(
         self,
         base_path,
-        copy_cmd=None,
         hardlink=True,
         dump_exif=False,
         lang=None,
@@ -331,7 +337,7 @@ class PhotoWoylie:
 
         self.base_path: Path = Path(base_path)
 
-        self.copy_cmd = copy_cmd if copy_cmd else get_copy_cmd()
+        # self.copy_cmd = copy_cmd if copy_cmd else get_copy_cmd()
 
         self.start_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 
@@ -363,6 +369,7 @@ class PhotoWoylie:
         )
 
         self.ignore_path = IGNORE_PATH
+        self.ignore_file_patterns = IGNORE_FILE_PATTERN
         self.extensions = EXTENSIONS_PIC + EXTENSIONS_RAW + EXTENSIONS_MOV
 
     def bootstrap_directory_structure(self):
@@ -470,18 +477,29 @@ class PhotoWoylie:
                 self.rebuild_file(p, exiftool=exiftool, trace=rebuild_trace)
 
     def file_digger(self, path: Path, recursive: bool = True):
-        stop_file = path.joinpath(STOP_FILE)  # stop if there is a stop file
-        if stop_file.exists():
-            print(f"⏸️ Found a stop-file in: {stop_file}")
-        elif path.parts[-1] in self.ignore_path:
-            print(f"⏸️ ignoring path: {path}")
-        elif path.exists() and path.is_dir():
-            for p in path.iterdir():
-                if p.is_file() and p.suffix.lower() in self.extensions:
-                    yield p
-
-                if p.is_dir() and recursive:
+        if not path.exists():
+            pass  # ignore nonexisting paths and files
+        elif path.is_dir():
+            stop_file = path.joinpath(STOP_FILE)  # stop if there is a stop file
+            if stop_file.exists():
+                print(f"⏸️ Found a stop-file in: {stop_file}")
+            elif path.parts[-1] in self.ignore_path:
+                print(f"⏸️ ignoring path: {path}")
+            else:
+                for p in path.iterdir():
                     yield from self.file_digger(p, recursive)
+        elif (
+            path.is_file()
+            and path.suffix.lower() in self.extensions
+            and not self.ignore_file(path.name)
+        ):
+            yield path
+
+    def ignore_file(self, file: str) -> bool:
+        for ignore_pattern in self.ignore_file_patterns:
+            if fnmatch.fnmatch(file, ignore_pattern):
+                return True
+        return False
 
     def remove_file(self, filename: Path, trace, exiftool: ExifTool):
         try:
@@ -492,7 +510,6 @@ class PhotoWoylie:
                 self.base_path,
                 filename,
                 exiftool=exiftool,
-                copy_cmd=self.copy_cmd,
                 start_time=self.start_time,
                 hardlink=self.hardlink,
             )
@@ -549,7 +566,6 @@ class PhotoWoylie:
                 self.base_path,
                 filename,
                 exiftool=exiftool,
-                copy_cmd=self.copy_cmd,
                 start_time=self.start_time,
                 hardlink=self.hardlink,
             )
@@ -623,7 +639,6 @@ class PhotoWoylie:
                 self.base_path,
                 filename,
                 exiftool=exiftool,
-                copy_cmd=self.copy_cmd,
                 start_time=self.start_time,
                 hardlink=self.hardlink,
             )
@@ -662,7 +677,6 @@ class PhotoWoylie:
             self,
             base_path: Path,
             filename: Path,
-            copy_cmd,
             exiftool: ExifTool,
             start_time: str,
             hardlink=True,
@@ -682,7 +696,7 @@ class PhotoWoylie:
             self.file_hash = hash_file(filename)
 
             self.link_function = os.link if hardlink else os.symlink
-            self.copy_cmd = copy_cmd if copy_cmd else get_copy_cmd()
+            # self.copy_cmd = copy_cmd if copy_cmd else get_copy_cmd()
 
             self.full_path = (
                 self.base_path
@@ -716,9 +730,15 @@ class PhotoWoylie:
 
         def import_file(self):
             if not any(self.full_path.parent.glob(self.file_hash + ".*")):
-                check_call(
-                    self.copy_cmd + [str(self.old_file_path), str(self.full_path)]
-                )
+                try:
+                    check_call(
+                        get_copy_cmd() + [str(self.old_file_path), str(self.full_path)]
+                    )
+                except RuntimeError as e:
+                    check_call(
+                        get_copy_cmd(retry=True)
+                        + [str(self.old_file_path), str(self.full_path)]
+                    )
 
                 self.flags.append("#")
                 self._load_exif()

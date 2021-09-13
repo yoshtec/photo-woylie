@@ -2,3 +2,7 @@ temp
 
 .idea
 venv
+
+dist
+photo_woylie.egg-info
+__pycache__
