@@ -1,8 +1,6 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: MIT
 
-import unittest
-
 from woylie.timekeeper import TimeKeeper
 
 TESTDATA1 = {
@@ -24,7 +22,7 @@ TESTDATA4 = {
 }
 
 
-class MyTestCase(unittest.TestCase):
+class TestCase:
 
     def test_something(self):
         tk = TimeKeeper()
@@ -47,6 +45,3 @@ class MyTestCase(unittest.TestCase):
         print(tk.as_iso_time())
         print(tk.as_utc_normalized())
 
-
-if __name__ == '__main__':
-    unittest.main()
