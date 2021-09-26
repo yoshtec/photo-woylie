@@ -22,8 +22,8 @@ jobs:
       - name: Install build and test dependencies
         run: python -m pip install --user --upgrade build setuptools wheel pytest pytest-cov click sqlite-utils
 
-      #- name: Run small tests
-      #  run: python -m pytest
+      - name: Run small tests
+        run: python -m pytest
 
       - name: Build
         run: python -m build

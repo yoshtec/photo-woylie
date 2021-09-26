@@ -40,6 +40,7 @@ from pathlib import Path
 
 # TODO: P1: Set initial File Permissions and ownership straight
 # TODO: P3: import multiprocessing # use parallel processing
+from woylie import timekeeper
 
 DATABASE_FILE = "metadata.db"
 STOP_FILE = ".woylie_stop"
@@ -129,6 +130,7 @@ class Columns(enum.Enum):
     IMPORTED = "imported"
     IGNORE = "ignore"
     DELETED = "deleted"
+    UTC_TIME = "utc_time"
 
 
 def hash_file(filename):
@@ -268,7 +270,9 @@ class ExifTool:
     minimal wrapper for exiftool always returns -json strings
     """
 
-    def __init__(self, ignore_tags=IGNORE_EXIF_TAGS):
+    def __init__(self, ignore_tags=None):
+        if ignore_tags is None:
+            ignore_tags = IGNORE_EXIF_TAGS
         cmd = [
             "exiftool",
             "-stay_open",
@@ -782,6 +786,10 @@ class PhotoWoylie:
                     del self.exif[tag]
 
             self.exif[Columns.HASH.value] = self.file_hash
+
+            tk = timekeeper.TimeKeeper()
+            tk.add_all(self.exif)
+            self.exif[Columns.UTC_TIME.value] = tk.as_utc_normalized()
 
             self.imported = True
 
