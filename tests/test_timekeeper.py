@@ -22,7 +22,7 @@ TESTDATA4 = {
 }
 
 
-class TestCase:
+class TestTimeKeeper:
 
     def test_something(self):
         tk = TimeKeeper()
