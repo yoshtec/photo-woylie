@@ -61,32 +61,44 @@ class TimeKeeper:
 
     def _add(self, etype: ExifDateTimeType, date_time_str: str):
         if etype.better(self.edt):
-            self.edt = etype
+            try:
+                self.edt = etype
+                dt = None
 
-            if "+" in date_time_str:
-                ar = date_time_str.split("+")
-                dt = datetime.datetime.strptime(ar[0], TIMESTR)
-                tm = strptime(ar[1], "%H:%M")
-                tz = datetime.timezone(datetime.timedelta(hours=tm.tm_hour, minutes=tm.tm_min))
+                time_format = TIMESTR
+                if "." in date_time_str:
+                    time_format = time_format + ".%f"
+                if "Z" in date_time_str:
+                    time_format = time_format + "Z"
 
-                self.datetime = dt.astimezone(tz)
+                if "+" in date_time_str:
+                    ar = date_time_str.split("+")
+                    dt = datetime.datetime.strptime(ar[0], time_format)
+                    tm = strptime(ar[1], "%H:%M")
+                    tz = datetime.timezone(datetime.timedelta(hours=tm.tm_hour, minutes=tm.tm_min))
+                    dt = dt.astimezone(tz)
 
-            elif "-" in date_time_str:
-                ar = date_time_str.split("-")
-                dt = datetime.datetime.strptime(ar[0], TIMESTR)
-                tm = strptime(ar[1], "%H:%M")
-                tz = datetime.timezone(datetime.timedelta(hours=-tm.tm_hour, minutes=-tm.tm_min))
+                elif "-" in date_time_str:
+                    ar = date_time_str.split("-")
+                    dt = datetime.datetime.strptime(ar[0], time_format)
+                    tm = strptime(ar[1], "%H:%M")
+                    tz = datetime.timezone(datetime.timedelta(hours=-tm.tm_hour, minutes=-tm.tm_min))
+                    dt = dt.astimezone(tz)
 
-                self.datetime = dt.astimezone(tz)
-
-            else:
-                dt = datetime.datetime.strptime(date_time_str, TIMESTR)
-                if self.edt.utctime:
-                    self.datetime = dt.replace(tzinfo=UTC)
                 else:
-                    self.datetime = dt.astimezone()  # using local current timezone
+                    dt = datetime.datetime.strptime(date_time_str, time_format)
+                    if etype.utctime:
+                        dt = dt.replace(tzinfo=UTC)  # time was already UTC
+                    else:
+                        dt = dt.astimezone()  # using local current timezone
 
-            print(f"{date_time_str} --> {self.datetime}")
+                self.edt = etype
+                self.datetime = dt
+            except ValueError as ve:
+                print(f"{date_time_str} --> {ve}")
+                raise ValueError
+
+            # print(f"{date_time_str} --> {self.datetime}")
 
     def add(self, tag: str, date_time_str: str):
         if tag in DATE_TIMES:

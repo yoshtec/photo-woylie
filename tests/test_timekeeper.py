@@ -18,8 +18,10 @@ TESTDATA3 = {
 }
 
 TESTDATA4 = {
-    "SonyDateTime": "2016:01:24 13:06:05",
+    "SonyDateTime": "2016:01:24 13:06:05.55",
 }
+
+
 
 
 class TestTimeKeeper:
@@ -44,4 +46,32 @@ class TestTimeKeeper:
 
         print(tk.as_iso_time())
         print(tk.as_utc_normalized())
+
+    def test_microseconds(self):
+        testdata = {
+            "SonyDateTime": "2016:01:24 13:06:05.55",
+        }
+
+        tk = TimeKeeper()
+        tk.add_all(testdata)
+
+        print(tk.as_iso_time())
+        print(tk.as_utc_normalized())
+
+        assert tk.as_utc_normalized() == "2016-01-24T12:06:05.550000+00:00"
+
+
+
+    def test_timezone(self):
+        testdata = {
+            "SonyDateTime": "2016:01:24 13:06:05Z",
+        }
+
+        tk = TimeKeeper()
+        tk.add_all(testdata)
+
+        print(tk.as_iso_time())
+        print(tk.as_utc_normalized())
+
+        assert tk.as_utc_normalized() == "2016-01-24T12:06:05+00:00"
 
