@@ -49,10 +49,8 @@ class TimeKeeper:
         self,
     ):
         self.datetime: datetime.datetime = None
-        self.best_time_tz: datetime.timezone = None
         self.edt: ExifDateTimeType = None
         self.times = []
-        # self.localtz = zoneinfo.ZoneInfo()
 
     def add_all(self, info: dict):
         for k in info:
@@ -60,7 +58,7 @@ class TimeKeeper:
                 self._add(DATE_TIMES[k], info[k])
 
     def _add(self, etype: ExifDateTimeType, date_time_str: str):
-        if etype.better(self.edt):
+        if etype.better(self.edt) and date_time_str is not None and date_time_str != "":
             try:
                 self.edt = etype
                 dt = None
@@ -101,7 +99,7 @@ class TimeKeeper:
                 self.datetime = dt
             except ValueError as ve:
                 print(f"{date_time_str} --> {ve}")
-                raise ValueError
+                # raise ValueError
 
             # print(f"{date_time_str} --> {self.datetime}")
 

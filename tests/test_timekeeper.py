@@ -80,3 +80,16 @@ class TestTimeKeeper:
 
         assert tk.as_iso_time() is None
         assert tk.as_utc_normalized() is None
+
+    def test_empty(self):
+        testdata = {
+            "SonyDateTime": "",
+        }
+
+        tk = TimeKeeper()
+        tk.add_all(testdata)
+
+        print(tk.as_iso_time())
+        print(tk.as_utc_normalized())
+
+        assert tk.as_utc_normalized() is None

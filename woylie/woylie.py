@@ -31,6 +31,8 @@ import logging
 import enum
 import datetime
 import json
+import shutil
+
 import sqlite_utils
 import requests
 import subprocess
@@ -178,6 +180,7 @@ def get_copy_cmd(retry=False):
 
 class OSMResolver:
     URL = "https://nominatim.openstreetmap.org/reverse"
+    HEADERS = {"user-agent": "photo-woylie"}
 
     def __init__(self, file_name: Path, lang=None):
         print("🗺️  Geo data provided by OpenStreetmap:")
@@ -206,17 +209,17 @@ class OSMResolver:
 
     def resolve(self, lat, lon):
         if lat is not None and lon is not None:
-            # https://operations.osmfoundation.org/policies/nominatim/
+            # All requests should be cached: https://operations.osmfoundation.org/policies/nominatim/
             js = self._resolve_cache(lat, lon)
 
             # Cache miss
             if js is None:
-                # https://nominatim.org/release-docs/develop/api/Reverse/
+                # Documentation https://nominatim.org/release-docs/develop/api/Reverse/
                 params = {"format": "jsonv2", "zoom": 12, "lat": lat, "lon": lon}
                 if self.lang:
                     params["accept-language"] = self.lang
 
-                r = requests.get(self.URL, params)
+                r = requests.get(self.URL, headers=self.HEADERS, params=params)
 
                 if r.status_code == 200:
                     js = r.json()
@@ -289,8 +292,11 @@ class ExifTool:
         for tag in ignore_tags:
             cmd.append(f'--"{tag}"')
 
+        self.cmd = cmd
+        self.count = 0
+
         self._xt = subprocess.Popen(
-            cmd,
+            self.cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -306,16 +312,20 @@ class ExifTool:
 
     def execute(self, file, find_unknown=False):
         end = b"{ready}"
+        self.count += 1
+        if self.count % 200 == 0:
+            self.load()
 
-        unknown = "\n-u\n-U" if find_unknown else ""
-
-        self._xt.stdin.write("\n" + str(file) + unknown + "\n-execute\n")
+        if find_unknown:
+            self._xt.stdin.write("\n-u\n-U\n")
+        self._xt.stdin.write("\n" + str(file) + "\n-execute\n")
         self._xt.stdin.flush()
 
         result = b""
         stdout = self._xt.stdout.fileno()
         while not result[-10:].strip().endswith(end):
             result += os.read(stdout, 4096)
+
         return result.strip()[: -len(end)].decode(ENC)
 
     def close(self):
@@ -323,7 +333,18 @@ class ExifTool:
             self._xt.stdin.write("-stay_open\nFalse\n")
             self._xt.stdin.flush()
             self._xt.communicate()
-            del self._xt
+            # del self._xt
+
+    def load(self):
+        self.close()
+        self._xt = subprocess.Popen(
+            self.cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding=ENC,
+        )
 
 
 class PhotoWoylie:
@@ -470,8 +491,12 @@ class PhotoWoylie:
             Folders.BY_LOCATION.value,
         ]:
             f = self.base_path / folder
-            f.rmdir()
+            rebuild_trace.write(f"deleting folder: {f}")
+            shutil.rmtree(f, ignore_errors=True)
             f.mkdir()
+
+        rebuild_trace.write(f"dropping table: {Tables.TABLE_FILES.value}")
+        self.db[Tables.TABLE_FILES.value].drop(ignore=True)
 
         exiftool = ExifTool()
         # go through all files in hash-lib
@@ -557,9 +582,9 @@ class PhotoWoylie:
                 return 1
             if item[Columns.IGNORE.value]:
                 return 2
-            return 3
         except sqlite_utils.db.NotFoundError as e:
             return 0
+        return 3
 
     def import_file(self, filename: Path, trace, exiftool: ExifTool):
         try:
@@ -650,6 +675,10 @@ class PhotoWoylie:
             self.count_scanned += 1
 
             fi.load_file()
+
+            self.db[Tables.TABLE_FILES.value].insert_all(
+                [fi.get_origin()], pk=Columns.HASH.value, alter=True
+            )
 
             trace.write("%s\t" % fi.full_path)
 
@@ -744,13 +773,10 @@ class PhotoWoylie:
                         + [str(self.old_file_path), str(self.full_path)]
                     )
 
-                self.flags.append("#")
-                self._load_exif()
-                # Add original Filename as Metadata
-                # self.exif["OriginalPath"] = str(self.old_file_path)
-                # self.exif["OriginalFile"] = self.old_file_path.name
-                # self.origin["ImportedAt"] = self.start_time
-                self.imported = True
+            self.flags.append("#")
+            self._load_exif()
+
+            self.imported = True
 
         def delete_file(self):
             if self.full_path.exists():
@@ -773,13 +799,6 @@ class PhotoWoylie:
             mstring = self.exiftool.execute(self.full_path)
             self.exif = json.loads(mstring)[0]
 
-            self.datetime_filename = (
-                self.extract_date().replace(":", "-").replace(" ", "_")[0:19]
-                + "_"
-                + self.file_hash[0:8]
-                + self.ext
-            )
-
             # still necessary for deleting exifTool immanent information
             for tag in IGNORE_EXIF_TAGS:
                 if tag in self.exif:
@@ -790,6 +809,13 @@ class PhotoWoylie:
             tk = timekeeper.TimeKeeper()
             tk.add_all(self.exif)
             self.exif[Columns.UTC_TIME.value] = tk.as_utc_normalized()
+
+            if tk.as_utc_normalized():
+                self.datetime_filename = (
+                    tk.as_utc_normalized()[0:19] + "_" + self.file_hash[0:8] + self.ext
+                )
+            else:
+                self.datetime_filename = "0000-00-00_" + self.file_hash[0:8] + self.ext
 
             self.imported = True
 
