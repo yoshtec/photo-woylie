@@ -11,21 +11,21 @@ TIMESTR = "%Y:%m:%d %H:%M:%S"
 
 
 class ExifDateTimeType:
-    def __init__(self, name: str, utctime: bool = False, rank: int= 0):
+    def __init__(self, name: str, utctime: bool = False, rank: int = 0):
         self.name = name
         self.utctime = utctime
         self.rank = rank
 
-    def better(self, etd: 'ExifDateTimeType'):
+    def better(self, etd: "ExifDateTimeType"):
         return self.rank > etd.rank if etd is not None else True
 
-    def __lt__(self, other: 'ExifDateTimeType'):
+    def __lt__(self, other: "ExifDateTimeType"):
         return self.rank < other.rank if other is not None else False
 
-    def __gt__(self, other: 'ExifDateTimeType'):
+    def __gt__(self, other: "ExifDateTimeType"):
         return self.rank > other.rank if other is not None else False
 
-    def __le__(self, other: 'ExifDateTimeType'):
+    def __le__(self, other: "ExifDateTimeType"):
         return self.rank <= other.rank if other is not None else False
 
 
@@ -52,7 +52,7 @@ class TimeKeeper:
         self.best_time_tz: datetime.timezone = None
         self.edt: ExifDateTimeType = None
         self.times = []
-        #self.localtz = zoneinfo.ZoneInfo()
+        # self.localtz = zoneinfo.ZoneInfo()
 
     def add_all(self, info: dict):
         for k in info:
@@ -65,6 +65,7 @@ class TimeKeeper:
                 self.edt = etype
                 dt = None
 
+                # Prepare for eventualities
                 time_format = TIMESTR
                 if "." in date_time_str:
                     time_format = time_format + ".%f"
@@ -75,14 +76,18 @@ class TimeKeeper:
                     ar = date_time_str.split("+")
                     dt = datetime.datetime.strptime(ar[0], time_format)
                     tm = strptime(ar[1], "%H:%M")
-                    tz = datetime.timezone(datetime.timedelta(hours=tm.tm_hour, minutes=tm.tm_min))
+                    tz = datetime.timezone(
+                        datetime.timedelta(hours=tm.tm_hour, minutes=tm.tm_min)
+                    )
                     dt = dt.astimezone(tz)
 
                 elif "-" in date_time_str:
                     ar = date_time_str.split("-")
                     dt = datetime.datetime.strptime(ar[0], time_format)
                     tm = strptime(ar[1], "%H:%M")
-                    tz = datetime.timezone(datetime.timedelta(hours=-tm.tm_hour, minutes=-tm.tm_min))
+                    tz = datetime.timezone(
+                        datetime.timedelta(hours=-tm.tm_hour, minutes=-tm.tm_min)
+                    )
                     dt = dt.astimezone(tz)
 
                 else:
@@ -105,11 +110,10 @@ class TimeKeeper:
             self._add(DATE_TIMES[tag], date_time_str)
 
     def as_iso_time(self) -> str:
-        return self.datetime.isoformat()
+        return self.datetime.isoformat() if self.datetime else None
 
     def as_utc_normalized(self) -> str:
-        return self.datetime.astimezone(UTC).isoformat()
-        #return pytz.UTC.localize(self.datetime).isoformat()
+        return self.datetime.astimezone(UTC).isoformat() if self.datetime else None
 
     def __str__(self):
         return self.as_iso_time()
