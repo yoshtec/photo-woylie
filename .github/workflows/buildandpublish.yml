@@ -22,7 +22,10 @@ jobs:
       - name: Change Timezone for testing
         run: sudo timedatectl set-timezone Europe/Berlin
 
-      - name: Install build and test dependencies
+      - name: Install run dependencies
+        run: sudo apt install exiftool
+
+      - name: Install build and test python dependencies
         run: python -m pip install --user --upgrade build setuptools wheel pytest pytest-cov click sqlite-utils
 
       - name: Run small tests

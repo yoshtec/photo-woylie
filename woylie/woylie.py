@@ -44,8 +44,6 @@ from pathlib import Path
 # TODO: P3: import multiprocessing # use parallel processing
 from woylie import timekeeper
 
-DATABASE_FILE = "metadata.db"
-STOP_FILE = ".woylie_stop"
 ENC = "utf-8"
 
 EXTENSIONS_PIC = [
@@ -84,6 +82,8 @@ IGNORE_EXIF_TAGS = [
     "FileInodeChangeDate",
     "FilePermissions",
     "FileTypeExtension",
+    "ExifToolVersion",
+    "ExifByteOrder",
     "ProfileDescriptionML*",
 ]
 
@@ -102,18 +102,10 @@ class Folders(enum.Enum):
     BY_LOCATION = "by-location"
 
 
-class ExifDateTime(enum.Enum):
-    """
-    Date Time options to extract the exact Date and Time of a File
-    """
-
-    DATETIME_ORG = "DateTimeOriginal"  # Local DateTime
-    DATETIME_CREATED = "CreateDate"  # Local DateTime
-    DATETIME_GPS = "GPSDateTime"
-    DATETIME_MOD = "ModifyDate"
-    DATETIME_SONY = "SonyDateTime"  # Contains local DateTime
-    DATETIME_SONY2 = "SonyDateTime2"  # Contains UTC Time
-    DATETIME_FILE_MODIFY = "FileModifyDate"
+class Files(enum.Enum):
+    DATABASE = "metadata.db"
+    STOP = ".woylie_stop"
+    OSM_CACHE = "osm-cache.json"
 
 
 class Tables(enum.Enum):
@@ -133,6 +125,7 @@ class Columns(enum.Enum):
     IGNORE = "ignore"
     DELETED = "deleted"
     UTC_TIME = "utc_time"
+    ORIGIN_FILE = "origin_file"
 
 
 def hash_file(filename):
@@ -230,34 +223,32 @@ class OSMResolver:
     def resolve_name(self, lat, lon):
         osmjs = self.resolve(lat, lon)
 
-        if osmjs:
-            if "address" in osmjs and "country" in osmjs["address"]:
-                if "city" in osmjs["address"]:
-                    return Path(osmjs["address"]["country"], osmjs["address"]["city"])
-                elif "village" in osmjs["address"]:
-                    return Path(
-                        osmjs["address"]["country"], osmjs["address"]["village"]
-                    )
-                elif "municipality" in osmjs["address"]:
-                    return Path(
-                        osmjs["address"]["country"], osmjs["address"]["municipality"]
-                    )
-                elif "town" in osmjs["address"]:
-                    return Path(osmjs["address"]["country"], osmjs["address"]["town"])
-                elif "state" in osmjs["address"]:
-                    return Path(osmjs["address"]["country"], osmjs["address"]["state"])
-                elif "county" in osmjs["address"]:
-                    return Path(osmjs["address"]["country"], osmjs["address"]["county"])
-                else:
-                    print(f"🗺️  Result for OpenStreetMap: lat={lat}, lon={lon}")
-                    print(f"🗺️  Query result: {osmjs}")
-                    return Path(osmjs["address"]["country"])
-            elif "display_name" in osmjs:
-                return Path(osmjs["display_name"])
+        if not osmjs:
+            print(f"🗺️  Result for OpenStreetMap: lat={lat}, lon={lon}")
+            print(f"🗺️  Query result: {osmjs}")
+            return Path("Unknown") / Path(f"lat_{lat}_lon_{lon}")
 
-        print(f"🗺️  Result for OpenStreetMap: lat={lat}, lon={lon}")
-        print(f"🗺️  Query result: {osmjs}")
-        return Path("Unknown")
+        if "address" in osmjs and "country" in osmjs["address"]:
+            if "city" in osmjs["address"]:
+                return Path(osmjs["address"]["country"], osmjs["address"]["city"])
+            elif "village" in osmjs["address"]:
+                return Path(osmjs["address"]["country"], osmjs["address"]["village"])
+            elif "municipality" in osmjs["address"]:
+                return Path(
+                    osmjs["address"]["country"], osmjs["address"]["municipality"]
+                )
+            elif "town" in osmjs["address"]:
+                return Path(osmjs["address"]["country"], osmjs["address"]["town"])
+            elif "state" in osmjs["address"]:
+                return Path(osmjs["address"]["country"], osmjs["address"]["state"])
+            elif "county" in osmjs["address"]:
+                return Path(osmjs["address"]["country"], osmjs["address"]["county"])
+            else:
+                print(f"🗺️  Result for OpenStreetMap: lat={lat}, lon={lon}")
+                print(f"🗺️  Query result: {osmjs}")
+                return Path(osmjs["address"]["country"])
+        elif "display_name" in osmjs:
+            return Path(osmjs["display_name"])
 
     def cache_write(self):
         file = self.file_name.open("w")
@@ -295,14 +286,8 @@ class ExifTool:
         self.cmd = cmd
         self.count = 0
 
-        self._xt = subprocess.Popen(
-            self.cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding=ENC,
-        )
+        self._xt = None
+        self.load()
 
     def __del__(self):
         self.close()
@@ -313,7 +298,7 @@ class ExifTool:
     def execute(self, file, find_unknown=False):
         end = b"{ready}"
         self.count += 1
-        if self.count % 200 == 0:
+        if self.count % 100 == 0:
             self.load()
 
         if find_unknown:
@@ -362,8 +347,6 @@ class PhotoWoylie:
 
         self.base_path: Path = Path(base_path)
 
-        # self.copy_cmd = copy_cmd if copy_cmd else get_copy_cmd()
-
         self.start_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 
         self.exif_dump = []
@@ -386,11 +369,11 @@ class PhotoWoylie:
         self.bootstrap_directory_structure()
 
         self.osm = OSMResolver(
-            self.base_path / Folders.DATA.value / "osm-cache.json", lang=lang
+            self.base_path / Folders.DATA.value / Files.OSM_CACHE.value, lang=lang
         )
 
         self.db = sqlite_utils.Database(
-            self.base_path / Folders.DATA.value / DATABASE_FILE
+            self.base_path / Folders.DATA.value / Files.DATABASE.value
         )
 
         self.ignore_path = IGNORE_PATH
@@ -492,11 +475,13 @@ class PhotoWoylie:
         ]:
             f = self.base_path / folder
             rebuild_trace.write(f"deleting folder: {f}")
+            print(f"deleting folder: {f}")
             shutil.rmtree(f, ignore_errors=True)
             f.mkdir()
 
-        rebuild_trace.write(f"dropping table: {Tables.TABLE_FILES.value}")
-        self.db[Tables.TABLE_FILES.value].drop(ignore=True)
+        rebuild_trace.write(f"dropping table: {Tables.TABLE_EXIF.value}")
+        print(f"dropping table: {Tables.TABLE_EXIF.value}")
+        self.db[Tables.TABLE_EXIF.value].drop(ignore=True)
 
         exiftool = ExifTool()
         # go through all files in hash-lib
@@ -509,7 +494,7 @@ class PhotoWoylie:
         if not path.exists():
             pass  # ignore nonexisting paths and files
         elif path.is_dir():
-            stop_file = path.joinpath(STOP_FILE)  # stop if there is a stop file
+            stop_file = path.joinpath(Files.STOP.value)  # stop if there is a stop file
             if stop_file.exists():
                 print(f"⏸️ Found a stop-file in: {stop_file}")
             elif path.parts[-1] in self.ignore_path:
@@ -612,30 +597,14 @@ class PhotoWoylie:
 
                 if self.link_import:
                     fi.link_import()
-                if self.link_date:
-                    fi.link_datetime()
-                if self.link_cam:
-                    fi.link_camera()
-                if self.link_gps:
-                    fi.link_gps(self.osm)
 
-                if self.dump_exif:
-                    self.exif_dump.append(fi.exif)
+                self.link_standards(fi)
 
                 self.db[Tables.TABLE_FILES.value].insert_all(
                     [fi.get_origin()], pk=Columns.HASH.value, alter=True
                 )
 
-                for k in fi.exif:
-                    if isinstance(fi.exif[k], str) and fi.exif[k].startswith("base64:"):
-                        fi.exif[k] = base64.b64decode(fi.exif[k][7:])
-
-                self.db[Tables.TABLE_EXIF.value].insert_all(
-                    [fi.exif],
-                    pk=Columns.HASH.value,
-                    batch_size=10,
-                    alter=True,
-                )
+                self.save_exif(fi)
 
                 trace.write("✅OK!\t%s\n" % fi.flags)
                 print("✅  Imported: ", fi.flags)
@@ -670,29 +639,20 @@ class PhotoWoylie:
                 exiftool=exiftool,
                 start_time=self.start_time,
                 hardlink=self.hardlink,
+                file_hash=filename.stem,
             )
 
             self.count_scanned += 1
 
             fi.load_file()
 
-            self.db[Tables.TABLE_FILES.value].insert_all(
-                [fi.get_origin()], pk=Columns.HASH.value, alter=True
-            )
-
             trace.write("%s\t" % fi.full_path)
 
-            if self.link_date:
-                fi.link_datetime()
-            if self.link_cam:
-                fi.link_camera()
-            if self.link_gps:
-                fi.link_gps(self.osm)
+            self.link_standards(fi)
 
-            if self.dump_exif:
-                self.exif_dump.append(fi.exif)
+            self.save_exif(fi)
 
-            trace.write("✅OK!\t%s\n" % fi.flags)
+            trace.write("✅ OK!\t%s\n" % fi.flags)
             print("✅  Rebuild: ", fi.flags)
 
         except (RuntimeError, PermissionError) as e:
@@ -705,6 +665,25 @@ class PhotoWoylie:
             print("❌  Error")
             raise
 
+    def save_exif(self, fi):
+        if self.dump_exif:
+            self.exif_dump.append(fi.exif)
+        fi.clean_base64_exif()
+        self.db[Tables.TABLE_EXIF.value].insert_all(
+            [fi.exif],
+            pk=Columns.HASH.value,
+            batch_size=10,
+            alter=True,
+        )
+
+    def link_standards(self, fi):
+        if self.link_date:
+            fi.link_datetime()
+        if self.link_cam:
+            fi.link_camera()
+        if self.link_gps:
+            fi.link_gps(self.osm)
+
     class FileImporter:
         def __init__(
             self,
@@ -713,6 +692,7 @@ class PhotoWoylie:
             exiftool: ExifTool,
             start_time: str,
             hardlink=True,
+            file_hash=None,
         ):
             self.flags = []
 
@@ -722,14 +702,12 @@ class PhotoWoylie:
 
             self.old_file_path = filename
             self.old_file_name = filename.name
-            self.ext = (
-                filename.suffix.lower()
-            )  # make the extension lowercase for consistency
 
-            self.file_hash = hash_file(filename)
+            # make the extension lowercase for consistency
+            self.ext = filename.suffix.lower()
+            self.file_hash = hash_file(filename) if file_hash is None else file_hash
 
             self.link_function = os.link if hardlink else os.symlink
-            # self.copy_cmd = copy_cmd if copy_cmd else get_copy_cmd()
 
             self.full_path = (
                 self.base_path
@@ -738,7 +716,6 @@ class PhotoWoylie:
                 / str(self.file_hash + self.ext)
             )
 
-            # TODO: sanity check
             self.datetime_filename = None
 
             self.exif = None
@@ -750,14 +727,16 @@ class PhotoWoylie:
             origin = dict()
             origin[Columns.HASH.value] = self.file_hash
             origin[Columns.EXTENSION.value] = self.full_path.suffix
-            # origin["OriginalPath"] = str(self.old_file_path)
-            # origin["OriginalFile"] = self.old_file_path.name
+
             origin[Columns.IMPORTED_AT.value] = (
                 self.start_time if self.imported else None
             )
+
             origin[Columns.IMPORTED.value] = self.imported
             origin[Columns.IGNORE.value] = self.ignore
             origin[Columns.DELETED.value] = self.deleted
+
+            origin[Columns.ORIGIN_FILE.value] = self.old_file_name
 
             return origin
 
@@ -800,9 +779,10 @@ class PhotoWoylie:
             self.exif = json.loads(mstring)[0]
 
             # still necessary for deleting exifTool immanent information
-            for tag in IGNORE_EXIF_TAGS:
-                if tag in self.exif:
-                    del self.exif[tag]
+            for tag in list(self.exif):
+                for tagp in IGNORE_EXIF_TAGS:
+                    if fnmatch.fnmatch(tag, tagp):
+                        del self.exif[tag]
 
             self.exif[Columns.HASH.value] = self.file_hash
 
@@ -818,6 +798,11 @@ class PhotoWoylie:
                 self.datetime_filename = "0000-00-00_" + self.file_hash[0:8] + self.ext
 
             self.imported = True
+
+        def clean_base64_exif(self):
+            for k in self.exif:
+                if isinstance(self.exif[k], str) and self.exif[k].startswith("base64:"):
+                    self.exif[k] = base64.b64decode(self.exif[k][7:])
 
         def _link(self, link_name: Path):
             if self.deleted:  # essentially unlinking again deleted files
@@ -901,11 +886,6 @@ class PhotoWoylie:
                 )
                 self.flags.append("📸")
 
-        def extract_date(self):
-            for dt in ExifDateTime:
-                if dt.value in self.exif:
-                    return self.exif[dt.value]
-
         def delete_links(self):
             for f in Folders:
                 if f.value.startswith("by-"):
@@ -917,8 +897,8 @@ class PhotoWoylie:
     @classmethod
     def stop(cls, path):
         p = Path(path)
-        if p.name != STOP_FILE:
-            p = p / STOP_FILE
+        if p.name != Files.STOP.value:
+            p = p / Files.STOP.value
             if not p.exists():
                 p.touch(exist_ok=True)
                 print(f"created Stop File: {p.absolute()}")
