@@ -115,6 +115,7 @@ class Tables(enum.Enum):
 
     TABLE_EXIF = "exif"
     TABLE_FILES = "files"
+    DERIVED = "derived"
 
 
 class Columns(enum.Enum):
@@ -161,14 +162,77 @@ def check_call(args, ignore_return_code=False):
     return stdout
 
 
-def get_copy_cmd(retry=False):
-    if platform.system() == "Darwin":
-        return ["cp"] if retry else ["cp", "-c"]
-    elif platform.system() == "Windows":
-        print("WARN: Windows Support currently not implemented")
-        return ["copy"]  # Windows Use Junctions or Links?
-    else:
-        return ["cp", "--reflink=auto"]
+class ExifTool:
+    """
+    minimal wrapper for exiftool always returns -json strings
+    """
+
+    def __init__(self, ignore_tags=None):
+        if ignore_tags is None:
+            ignore_tags = IGNORE_EXIF_TAGS
+        cmd = [
+            "exiftool",
+            "-stay_open",
+            "True",
+            "-@",
+            "-",
+            "-common_args",
+            "-json",
+            "-n",  # No print conversion
+            "-b",  # get binary data starts with "base64:" see https://exiftool.org/forum/index.php?topic=5586.0
+            # "-u",  # Find unknown tags
+            # "-U",  # also find binary unknown tags
+        ]
+        for tag in ignore_tags:
+            cmd.append(f'--"{tag}"')
+
+        self.cmd = cmd
+        self.count = 0
+
+        self._xt = None
+        self.load()
+
+    def __del__(self):
+        self.close()
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+    def execute(self, file, find_unknown=False):
+        end = b"{ready}"
+        self.count += 1
+        if self.count % 100 == 0:
+            self.load()
+
+        if find_unknown:
+            self._xt.stdin.write("\n-u\n-U\n")
+        self._xt.stdin.write("\n" + str(file) + "\n-execute\n")
+        self._xt.stdin.flush()
+
+        result = b""
+        stdout = self._xt.stdout.fileno()
+        while not result[-10:].strip().endswith(end):
+            result += os.read(stdout, 4096)
+
+        return result.strip()[: -len(end)].decode(ENC)
+
+    def close(self):
+        if self._xt is not None:
+            self._xt.stdin.write("-stay_open\nFalse\n")
+            self._xt.stdin.flush()
+            self._xt.communicate()
+            # del self._xt
+
+    def load(self):
+        self.close()
+        self._xt = subprocess.Popen(
+            self.cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding=ENC,
+        )
 
 
 class OSMResolver:
@@ -246,7 +310,7 @@ class OSMResolver:
             else:
                 print(f"🗺️  Result for OpenStreetMap: lat={lat}, lon={lon}")
                 print(f"🗺️  Query result: {osmjs}")
-                return Path(osmjs["address"]["country"])
+                return Path(osmjs["address"]["country"]) / Path(f"lat_{lat}_lon_{lon}")
         elif "display_name" in osmjs:
             return Path(osmjs["display_name"])
 
@@ -259,77 +323,294 @@ class OSMResolver:
         self.cache_write()
 
 
-class ExifTool:
-    """
-    minimal wrapper for exiftool always returns -json strings
-    """
+class FileImporter:
+    def __init__(
+        self,
+        base_path: Path,
+        filename: Path,
+        exiftool: ExifTool,
+        start_time: str,
+        hardlink=True,
+        file_hash=None,
+    ):
+        self.flags = []
 
-    def __init__(self, ignore_tags=None):
-        if ignore_tags is None:
-            ignore_tags = IGNORE_EXIF_TAGS
-        cmd = [
-            "exiftool",
-            "-stay_open",
-            "True",
-            "-@",
-            "-",
-            "-common_args",
-            "-json",
-            "-n",  # No print conversion
-            "-b",  # get binary data starts with "base64:" see https://exiftool.org/forum/index.php?topic=5586.0
-            # "-u",  # Find unknown tags
-            # "-U",  # also find binary unknown tags
-        ]
-        for tag in ignore_tags:
-            cmd.append(f'--"{tag}"')
+        self.exiftool = exiftool
+        self.base_path = base_path.absolute()
+        self.start_time = start_time
 
-        self.cmd = cmd
-        self.count = 0
+        self.old_file_path = filename
+        self.old_file_name = filename.name
 
-        self._xt = None
-        self.load()
+        # make the extension lowercase for consistency
+        self.ext = filename.suffix.lower()
+        self.file_hash = hash_file(filename) if file_hash is None else file_hash
 
-    def __del__(self):
-        self.close()
+        self.link_function = os.link if hardlink else os.symlink
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close()
-
-    def execute(self, file, find_unknown=False):
-        end = b"{ready}"
-        self.count += 1
-        if self.count % 100 == 0:
-            self.load()
-
-        if find_unknown:
-            self._xt.stdin.write("\n-u\n-U\n")
-        self._xt.stdin.write("\n" + str(file) + "\n-execute\n")
-        self._xt.stdin.flush()
-
-        result = b""
-        stdout = self._xt.stdout.fileno()
-        while not result[-10:].strip().endswith(end):
-            result += os.read(stdout, 4096)
-
-        return result.strip()[: -len(end)].decode(ENC)
-
-    def close(self):
-        if self._xt is not None:
-            self._xt.stdin.write("-stay_open\nFalse\n")
-            self._xt.stdin.flush()
-            self._xt.communicate()
-            # del self._xt
-
-    def load(self):
-        self.close()
-        self._xt = subprocess.Popen(
-            self.cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding=ENC,
+        self.full_path = (
+            self.base_path
+            / Folders.HASH_LIB.value
+            / self.file_hash[0:1]
+            / str(self.file_hash + self.ext)
         )
+
+        self.datetime_filename = None
+
+        self.exif = None
+        self.imported = False
+        self.ignore = False
+        self.deleted = False
+
+    def get_origin(self) -> dict:
+        origin = dict()
+        origin[Columns.HASH.value] = self.file_hash
+        origin[Columns.EXTENSION.value] = self.full_path.suffix
+
+        origin[Columns.IMPORTED_AT.value] = self.start_time if self.imported else None
+
+        origin[Columns.IMPORTED.value] = self.imported
+        origin[Columns.IGNORE.value] = self.ignore
+        origin[Columns.DELETED.value] = self.deleted
+
+        origin[Columns.ORIGIN_FILE.value] = self.old_file_name
+
+        return origin
+
+    def import_file(self):
+        def get_copy_cmd(retry=False):
+            if platform.system() == "Darwin":
+                return ["cp"] if retry else ["cp", "-c"]
+            elif platform.system() == "Windows":
+                print("WARN: Windows Support currently not implemented")
+                return ["copy"]  # Windows Use Junctions or Links?
+            else:
+                return ["cp", "--reflink=auto"]
+
+        if not any(self.full_path.parent.glob(self.file_hash + ".*")):
+            try:
+                check_call(
+                    get_copy_cmd() + [str(self.old_file_path), str(self.full_path)]
+                )
+            except RuntimeError as e:
+                check_call(
+                    get_copy_cmd(retry=True)
+                    + [str(self.old_file_path), str(self.full_path)]
+                )
+
+        self.flags.append("#")
+        self._load_exif()
+
+        self.imported = True
+
+    def delete_file(self):
+        if self.full_path.exists():
+            self.flags.append("🗑️")
+            self._load_exif()
+            self.full_path.unlink()
+            self.deleted = True
+        self.ignore = True
+
+    def ignore_file(self):
+        self.ignore = True
+        self.flags.append("I")
+
+    def load_file(self):
+        if self.full_path.exists():
+            self.flags.append("%")
+            self._load_exif()
+
+    def _load_exif(self):
+        mstring = self.exiftool.execute(self.full_path)
+        self.exif = json.loads(mstring)[0]
+
+        # still necessary for deleting exifTool immanent information
+        for tag in list(self.exif):
+            for tagp in IGNORE_EXIF_TAGS:
+                if fnmatch.fnmatch(tag, tagp):
+                    del self.exif[tag]
+
+        self.exif[Columns.HASH.value] = self.file_hash
+
+        tk = timekeeper.TimeKeeper()
+        tk.add_all(self.exif)
+        self.exif[Columns.UTC_TIME.value] = tk.as_utc_normalized()
+
+        if tk.as_utc_normalized():
+            self.datetime_filename = (
+                tk.as_utc_normalized()[0:19] + "_" + self.file_hash[0:8] + self.ext
+            )
+        else:
+            self.datetime_filename = "0000-00-00_" + self.file_hash[0:8] + self.ext
+
+        self.imported = True
+
+    def _link(self, link_name: Path):
+        if self.deleted:  # essentially unlinking again deleted files
+            if link_name.exists():
+                link_name.unlink()
+                return True
+            return False
+        else:
+            link_name.parent.mkdir(parents=True, exist_ok=True)
+            if not link_name.exists():
+                self.link_function(self.full_path, link_name)
+                return True
+            return False
+
+    def link_import(self):
+        p = (
+            self.base_path
+            / Folders.BY_IMPORT.value
+            / self.start_time
+            / self.old_file_name
+        )
+        if not self._link(p):
+            p = (
+                self.base_path
+                / Folders.BY_IMPORT.value
+                / self.start_time
+                / Path(self.old_file_path.parts[-1] + self.old_file_name)
+            )
+            self._link(p)
+        self.flags.append("💾")
+
+    def link_datetime(self):
+        self._link(
+            self.base_path
+            / Folders.BY_TIME.value
+            / self.datetime_filename[0:4]
+            / self.datetime_filename[5:7]
+            / self.datetime_filename
+        )
+        self.flags.append("🕘")
+
+    def link_gps(self, osm: OSMResolver):
+        lat = None
+        lon = None
+        if "GPSLatitude" in self.exif and "GPSLongitude" in self.exif:
+            lat = self.exif["GPSLatitude"]
+            lon = self.exif["GPSLongitude"]
+        elif "GPSPosition" in self.exif:
+            gpspos = self.exif["GPSPosition"].split()
+            lat = gpspos[0]
+            lon = gpspos[1]
+
+        if lat is not None and lon is not None:
+            osmpath = osm.resolve_name(lat, lon)
+            self._link(
+                self.base_path
+                / Folders.BY_LOCATION.value
+                / osmpath
+                / self.datetime_filename
+            )
+            self.flags.append("🌍")
+
+    def link_camera(self):
+        name = ""
+
+        if "UserComment" in self.exif and self.exif["UserComment"] == "Screenshot":
+            name = "Screenshot"
+
+        if "Make" in self.exif:
+            name = self.exif["Make"]
+
+        if "Model" in self.exif:
+            name += " " + self.exif["Model"]
+
+        if name != "":
+            self._link(
+                self.base_path
+                / Folders.BY_CAMERA.value
+                / name.strip()
+                / self.datetime_filename
+            )
+            self.flags.append("📸")
+
+    def delete_links(self):
+        for f in Folders:
+            if f.value.startswith("by-"):
+                p = self.base_path / f.value
+                for file in p.rglob(self.datetime_filename):
+                    # file.unlink()
+                    print("would delete: ", file)
+
+
+class MetadataBase:
+    index = {
+        "exif_utc_time": "CREATE INDEX exif_utc_time ON exif (utc_time);",
+        "exif_hash_file": "CREATE UNIQUE INDEX exif_hash_file ON exif (file_hash);",
+    }
+
+    def __init__(self, path: Path):
+        self.db = sqlite_utils.Database(path)
+        self.has_indexes = False
+
+    def add_origin_data(self, d: dict):
+        self.db[Tables.TABLE_FILES.value].insert_all(
+            [d], pk=Columns.HASH.value, upsert=True, alter=True
+        )
+
+    def add_exif_data(self, exif: dict):
+
+        for k in exif:
+            if isinstance(exif[k], str) and exif[k].startswith("base64:"):
+                exif[k] = base64.b64decode(exif[k][7:])
+
+        self.db[Tables.TABLE_EXIF.value].insert_all(
+            [exif],
+            pk=Columns.HASH.value,
+            batch_size=10,
+            alter=True,
+        )
+
+    def drop_exif(self):
+        self.db[Tables.TABLE_EXIF.value].drop(ignore=True)
+
+    def check_exist_or_ignore(self, file_hash: str):
+        try:
+            item = self.db[Tables.TABLE_FILES.value].get(file_hash)
+            if item[Columns.IMPORTED.value]:
+                return 1
+            if item[Columns.IGNORE.value]:
+                return 2
+        except sqlite_utils.db.NotFoundError:
+            return 0
+        return 3
+
+    def check_create_index(self):
+
+        for i in self.index:
+            check_sql = f"select count(*)  from sqlite_master where name = '{i}' and type='index'"
+
+            for x in self.db.query(check_sql):
+                print(x)
+
+    def calculate_nearest(self):
+        for row in self.db[Tables.TABLE_EXIF.value].rows_where("GPSPosition is null"):
+            sql = (
+                "select "
+                f" min(abs(strftime('%s','{row[Columns.UTC_TIME.value]}') "
+                f" - strftime('%s', {Columns.UTC_TIME.value}))) as delta_sec,"
+                f" file_hash, GPSPosition, GPSLatitude, GPSLongitude, {Columns.UTC_TIME.value}"
+                f" from {Tables.TABLE_EXIF.value} where GPSPosition not NULL;"
+            )
+
+            for res in self.db.execute(sql=sql):
+                d = {
+                    Columns.HASH.value: row[Columns.HASH.value],
+                    Columns.UTC_TIME.value: row[Columns.UTC_TIME.value],
+                    Columns.HASH.value + "_origin": res[1],
+                    Columns.UTC_TIME.value + "_origin": res[5],
+                    "delta": res[0],
+                    "GPSPosition": res[2],
+                    "GPSLatitude": res[3],
+                    "GPSLongitude": res[4],
+                }
+
+                self.db[Tables.DERIVED.value].insert_all(
+                    [d], pk=[Columns.HASH.value], upsert=True, alter=True
+                )
 
 
 class PhotoWoylie:
@@ -372,7 +653,7 @@ class PhotoWoylie:
             self.base_path / Folders.DATA.value / Files.OSM_CACHE.value, lang=lang
         )
 
-        self.db = sqlite_utils.Database(
+        self.mdb = MetadataBase(
             self.base_path / Folders.DATA.value / Files.DATABASE.value
         )
 
@@ -481,7 +762,7 @@ class PhotoWoylie:
 
         rebuild_trace.write(f"dropping table: {Tables.TABLE_EXIF.value}")
         print(f"dropping table: {Tables.TABLE_EXIF.value}")
-        self.db[Tables.TABLE_EXIF.value].drop(ignore=True)
+        self.mdb.drop_exif()
 
         exiftool = ExifTool()
         # go through all files in hash-lib
@@ -520,7 +801,7 @@ class PhotoWoylie:
             print(f"▶️ File: {filename}", end=" ")
             trace.write("%s\t" % filename.absolute())
 
-            fi = self.FileImporter(
+            fi = FileImporter(
                 self.base_path,
                 filename,
                 exiftool=exiftool,
@@ -532,9 +813,7 @@ class PhotoWoylie:
 
             fi.delete_file()
 
-            self.db[Tables.TABLE_FILES.value].insert_all(
-                [fi.get_origin()], pk=Columns.HASH.value, upsert=True, alter=True
-            )
+            self.mdb.add_origin_data(fi.get_origin())
 
             if fi.deleted:
                 self.count_deleted += 1
@@ -560,23 +839,12 @@ class PhotoWoylie:
             print("❌  Error")
             raise
 
-    def check_exist_or_ignore(self, file_hash: str):
-        try:
-            item = self.db[Tables.TABLE_FILES.value].get(file_hash)
-            if item[Columns.IMPORTED.value]:
-                return 1
-            if item[Columns.IGNORE.value]:
-                return 2
-        except sqlite_utils.db.NotFoundError as e:
-            return 0
-        return 3
-
     def import_file(self, filename: Path, trace, exiftool: ExifTool):
         try:
             print("▶️ File:", filename, end=" ")
             trace.write("%s\t" % filename.absolute())
 
-            fi = self.FileImporter(
+            fi = FileImporter(
                 self.base_path,
                 filename,
                 exiftool=exiftool,
@@ -586,7 +854,7 @@ class PhotoWoylie:
 
             self.count_scanned += 1
 
-            status = self.check_exist_or_ignore(fi.file_hash)
+            status = self.mdb.check_exist_or_ignore(fi.file_hash)
             if status == 0:
                 fi.import_file()
 
@@ -598,13 +866,11 @@ class PhotoWoylie:
                 if self.link_import:
                     fi.link_import()
 
-                self.link_standards(fi)
+                self._link_standards(fi)
 
-                self.db[Tables.TABLE_FILES.value].insert_all(
-                    [fi.get_origin()], pk=Columns.HASH.value, alter=True
-                )
+                self.mdb.add_origin_data(fi.get_origin())
 
-                self.save_exif(fi)
+                self._save_exif(fi)
 
                 trace.write("✅OK!\t%s\n" % fi.flags)
                 print("✅  Imported: ", fi.flags)
@@ -633,7 +899,7 @@ class PhotoWoylie:
             print("▶️ File:", filename, end=" ")
             trace.write("%s\t" % filename.absolute())
 
-            fi = self.FileImporter(
+            fi = FileImporter(
                 self.base_path,
                 filename,
                 exiftool=exiftool,
@@ -648,9 +914,9 @@ class PhotoWoylie:
 
             trace.write("%s\t" % fi.full_path)
 
-            self.link_standards(fi)
+            self._link_standards(fi)
 
-            self.save_exif(fi)
+            self._save_exif(fi)
 
             trace.write("✅ OK!\t%s\n" % fi.flags)
             print("✅  Rebuild: ", fi.flags)
@@ -665,234 +931,19 @@ class PhotoWoylie:
             print("❌  Error")
             raise
 
-    def save_exif(self, fi):
+    def _save_exif(self, fi):
         if self.dump_exif:
             self.exif_dump.append(fi.exif)
-        fi.clean_base64_exif()
-        self.db[Tables.TABLE_EXIF.value].insert_all(
-            [fi.exif],
-            pk=Columns.HASH.value,
-            batch_size=10,
-            alter=True,
-        )
 
-    def link_standards(self, fi):
+        self.mdb.add_exif_data(fi.exif)
+
+    def _link_standards(self, fi):
         if self.link_date:
             fi.link_datetime()
         if self.link_cam:
             fi.link_camera()
         if self.link_gps:
             fi.link_gps(self.osm)
-
-    class FileImporter:
-        def __init__(
-            self,
-            base_path: Path,
-            filename: Path,
-            exiftool: ExifTool,
-            start_time: str,
-            hardlink=True,
-            file_hash=None,
-        ):
-            self.flags = []
-
-            self.exiftool = exiftool
-            self.base_path = base_path.absolute()
-            self.start_time = start_time
-
-            self.old_file_path = filename
-            self.old_file_name = filename.name
-
-            # make the extension lowercase for consistency
-            self.ext = filename.suffix.lower()
-            self.file_hash = hash_file(filename) if file_hash is None else file_hash
-
-            self.link_function = os.link if hardlink else os.symlink
-
-            self.full_path = (
-                self.base_path
-                / Folders.HASH_LIB.value
-                / self.file_hash[0:1]
-                / str(self.file_hash + self.ext)
-            )
-
-            self.datetime_filename = None
-
-            self.exif = None
-            self.imported = False
-            self.ignore = False
-            self.deleted = False
-
-        def get_origin(self) -> dict:
-            origin = dict()
-            origin[Columns.HASH.value] = self.file_hash
-            origin[Columns.EXTENSION.value] = self.full_path.suffix
-
-            origin[Columns.IMPORTED_AT.value] = (
-                self.start_time if self.imported else None
-            )
-
-            origin[Columns.IMPORTED.value] = self.imported
-            origin[Columns.IGNORE.value] = self.ignore
-            origin[Columns.DELETED.value] = self.deleted
-
-            origin[Columns.ORIGIN_FILE.value] = self.old_file_name
-
-            return origin
-
-        def import_file(self):
-            if not any(self.full_path.parent.glob(self.file_hash + ".*")):
-                try:
-                    check_call(
-                        get_copy_cmd() + [str(self.old_file_path), str(self.full_path)]
-                    )
-                except RuntimeError as e:
-                    check_call(
-                        get_copy_cmd(retry=True)
-                        + [str(self.old_file_path), str(self.full_path)]
-                    )
-
-            self.flags.append("#")
-            self._load_exif()
-
-            self.imported = True
-
-        def delete_file(self):
-            if self.full_path.exists():
-                self.flags.append("🗑️")
-                self._load_exif()
-                self.full_path.unlink()
-                self.deleted = True
-            self.ignore = True
-
-        def ignore_file(self):
-            self.ignore = True
-            self.flags.append("I")
-
-        def load_file(self):
-            if self.full_path.exists():
-                self.flags.append("%")
-                self._load_exif()
-
-        def _load_exif(self):
-            mstring = self.exiftool.execute(self.full_path)
-            self.exif = json.loads(mstring)[0]
-
-            # still necessary for deleting exifTool immanent information
-            for tag in list(self.exif):
-                for tagp in IGNORE_EXIF_TAGS:
-                    if fnmatch.fnmatch(tag, tagp):
-                        del self.exif[tag]
-
-            self.exif[Columns.HASH.value] = self.file_hash
-
-            tk = timekeeper.TimeKeeper()
-            tk.add_all(self.exif)
-            self.exif[Columns.UTC_TIME.value] = tk.as_utc_normalized()
-
-            if tk.as_utc_normalized():
-                self.datetime_filename = (
-                    tk.as_utc_normalized()[0:19] + "_" + self.file_hash[0:8] + self.ext
-                )
-            else:
-                self.datetime_filename = "0000-00-00_" + self.file_hash[0:8] + self.ext
-
-            self.imported = True
-
-        def clean_base64_exif(self):
-            for k in self.exif:
-                if isinstance(self.exif[k], str) and self.exif[k].startswith("base64:"):
-                    self.exif[k] = base64.b64decode(self.exif[k][7:])
-
-        def _link(self, link_name: Path):
-            if self.deleted:  # essentially unlinking again deleted files
-                if link_name.exists():
-                    link_name.unlink()
-                    return True
-                return False
-            else:
-                link_name.parent.mkdir(parents=True, exist_ok=True)
-                if not link_name.exists():
-                    self.link_function(self.full_path, link_name)
-                    return True
-                return False
-
-        def link_import(self):
-            p = (
-                self.base_path
-                / Folders.BY_IMPORT.value
-                / self.start_time
-                / self.old_file_name
-            )
-            if not self._link(p):
-                p = (
-                    self.base_path
-                    / Folders.BY_IMPORT.value
-                    / self.start_time
-                    / Path(self.old_file_path.parts[-1] + self.old_file_name)
-                )
-                self._link(p)
-            self.flags.append("💾")
-
-        def link_datetime(self):
-            self._link(
-                self.base_path
-                / Folders.BY_TIME.value
-                / self.datetime_filename[0:4]
-                / self.datetime_filename[5:7]
-                / self.datetime_filename
-            )
-            self.flags.append("🕘")
-
-        def link_gps(self, osm: OSMResolver):
-            lat = None
-            lon = None
-            if "GPSLatitude" in self.exif and "GPSLongitude" in self.exif:
-                lat = self.exif["GPSLatitude"]
-                lon = self.exif["GPSLongitude"]
-            elif "GPSPosition" in self.exif:
-                gpspos = self.exif["GPSPosition"].split()
-                lat = gpspos[0]
-                lon = gpspos[1]
-
-            if lat is not None and lon is not None:
-                osmpath = osm.resolve_name(lat, lon)
-                self._link(
-                    self.base_path
-                    / Folders.BY_LOCATION.value
-                    / osmpath
-                    / self.datetime_filename
-                )
-                self.flags.append("🌍")
-
-        def link_camera(self):
-            name = ""
-
-            if "UserComment" in self.exif and self.exif["UserComment"] == "Screenshot":
-                name = "Screenshot"
-
-            if "Make" in self.exif:
-                name = self.exif["Make"]
-
-            if "Model" in self.exif:
-                name += " " + self.exif["Model"]
-
-            if name != "":
-                self._link(
-                    self.base_path
-                    / Folders.BY_CAMERA.value
-                    / name.strip()
-                    / self.datetime_filename
-                )
-                self.flags.append("📸")
-
-        def delete_links(self):
-            for f in Folders:
-                if f.value.startswith("by-"):
-                    p = self.base_path / f.value
-                    for file in p.rglob(self.datetime_filename):
-                        # file.unlink()
-                        print("would delete: ", file)
 
     @classmethod
     def stop(cls, path):

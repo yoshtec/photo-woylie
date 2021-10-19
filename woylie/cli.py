@@ -4,7 +4,8 @@
 
 import sys
 import click
-from woylie.woylie import PhotoWoylie
+from woylie.woylie import PhotoWoylie, MetadataBase, Files, Folders
+from pathlib import Path
 
 
 def common_options(fn):
@@ -80,7 +81,7 @@ def list_extensions():
     "extensions",
     multiple=True,
     type=click.STRING,
-    help="add extensions to include",
+    help="add_origin extensions to include",
 )
 def import_files(
     base_path,
@@ -152,6 +153,21 @@ def rebuild(
         base_path=base_path, hardlink=not symlink, dump_exif=dump_exif, lang=language
     )
     woylie.rebuild()
+
+
+@cli.command()
+@click.argument(
+    "base-path",
+    nargs=1,
+    type=click.Path(file_okay=False, dir_okay=True, allow_dash=False),
+    required=True,
+)
+def infer(
+    base_path,
+):
+    """ infer Metadata from existing"""
+    db = MetadataBase(Path(base_path) / Folders.DATA.value / Files.DATABASE.value)
+    db.calculate_nearest()
 
 
 if "__main__" == __name__:

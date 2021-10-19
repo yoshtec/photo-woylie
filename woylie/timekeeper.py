@@ -103,7 +103,7 @@ class TimeKeeper:
 
             # print(f"{date_time_str} --> {self.datetime}")
 
-    def add(self, tag: str, date_time_str: str):
+    def add_origin(self, tag: str, date_time_str: str):
         if tag in DATE_TIMES:
             self._add(DATE_TIMES[tag], date_time_str)
 

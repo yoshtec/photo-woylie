@@ -37,3 +37,38 @@ create Table owner(
 	"FromDate" TEXT -- time in UTC
 	"ToDate" TEXT
 	)
+
+
+
+-- finding the smallest
+select abs(strftime('%s','2015-11-05T09:47:56+00:00') - strftime('%s',utc_time)) as delta_sec, file_hash, GPSPosition, GPSLatitude, GPSLongitude
+from exif
+where GPSPosition not NULL
+order by delta_sec;
+
+
+select e1.file_hash, min(abs(strftime('%s',e1.utc_time) - strftime('%s',e2.utc_time))) as delta_sec, e2.file_hash, e2.GPSPosition, e2.GPSLatitude, e2.GPSLongitude
+from exif  as e1, exif as e2
+where e2.GPSPosition not NULL and e1.GPSPosition is null
+limit 1000;
+
+
+
+select min(abs(strftime('%s','2015-11-05T09:47:56+00:00') - strftime('%s',utc_time))) as delta_sec, file_hash, GPSPosition, GPSLatitude, GPSLongitude
+from exif
+where GPSPosition not NULL;
+
+
+
+
+select
+	e1.file_hash as f1,
+	e2.file_hash as f2,
+	abs(strftime('%s',e1.utc_time) - strftime('%s',e2.utc_time)) as u_delta
+from
+	exif  as e1,
+	exif as e2
+where e2.GPSPosition is null and e1. GPSPosition not null
+
+order by u_delta
+limit 1000;
