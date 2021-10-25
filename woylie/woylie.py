@@ -113,12 +113,17 @@ class Tables(enum.Enum):
     Constants like table names for interaction with the metadata database
     """
 
-    TABLE_EXIF = "exif"
-    TABLE_FILES = "files"
-    DERIVED = "derived"
+    EXIF = "exif"
+    FILES = "files"
+    DERIVED_GPS = "derived_gps"
+    OSM_CACHE = "osm_cache"
 
 
 class Columns(enum.Enum):
+    """
+    Constants for Tag and Column Names
+    """
+
     HASH = "file_hash"
     EXTENSION = "extension"
     IMPORTED_AT = "importedAt"
@@ -127,6 +132,7 @@ class Columns(enum.Enum):
     DELETED = "deleted"
     UTC_TIME = "utc_time"
     ORIGIN_FILE = "origin_file"
+    OSM_PLACE_ID = "place_id"
 
 
 def hash_file(filename):
@@ -147,6 +153,10 @@ def hash_file(filename):
 
 
 def check_call(args, ignore_return_code=False):
+    """
+    execute shell call and return the standard-out
+    """
+
     cmd_str = " ".join(args)
     logging.info("Execute command: '%s' ", cmd_str)
     p = subprocess.Popen(
@@ -160,6 +170,125 @@ def check_call(args, ignore_return_code=False):
     if not ignore_return_code and p.returncode != 0:
         raise RuntimeError("failed to run '%s'" % cmd_str)
     return stdout
+
+
+class MetadataBase:
+    """
+    Encapsulates the Database
+    """
+    class Index(enum.Enum):
+        EXIF_UTC_TIME = f"CREATE INDEX exif_utc_time ON {Tables.EXIF.value} (utc_time);"
+        EXIF_HASH_FILE = f"CREATE UNIQUE INDEX exif_hash_file ON {Tables.EXIF.value} (file_hash);"
+        OSM_BOUNDING_BOX = f"CREATE INDEX osm_bounding_box ON {Tables.OSM_CACHE.value} (b0, b1, b2, b3);"
+
+    def __init__(self, path: Path):
+        self.db = sqlite_utils.Database(path)
+        self.indexes = list()
+
+    def _check_index(self, index: Index):
+        if index not in self.indexes:
+            self._check_and_create_index(index)
+
+    def _check_and_create_index(self, index: Index):
+
+        check_sql = f"select count(*) from sqlite_master where name = '{index.member.lower()}' and type='index'"
+
+        exists = False
+        for x in self.db.query(check_sql):
+            exists = True
+
+        if not exists:
+            self.db.query(index.value)
+
+        self.indexes.append(index)
+
+    def add_osm(self, js):
+        bb = "boundingbox"
+        if js and bb in js:
+            js["b0"] = float(js[bb][0])
+            js["b1"] = float(js[bb][1])
+            js["b2"] = float(js[bb][2])
+            js["b3"] = float(js[bb][3])
+
+        self.db[Tables.OSM_CACHE.value].insert_all(
+            [js], pk=Columns.OSM_PLACE_ID.value, alter=True, upsert=True
+        )
+
+    def osm_cache_resolve(self, lat, lon):
+        self._check_index(self.Index.OSM_BOUNDING_BOX)
+
+        sql = f"select * from {Tables.OSM_CACHE.value} where {lat} > b0 AND {lat} < b1 AND {lon} > b2 AND {lon} < b3"
+
+        for x in self.db.query(sql):
+            if "address" in x:
+                temp = json.loads(x["address"])
+                x["address"] = temp
+            return x
+
+    def add_origin_data(self, d: dict):
+        self.db[Tables.FILES.value].insert_all(
+            [d], pk=Columns.HASH.value, upsert=True, alter=True
+        )
+
+    def add_exif_data(self, exif: dict):
+
+        for k in exif:
+            if isinstance(exif[k], str) and exif[k].startswith("base64:"):
+                exif[k] = base64.b64decode(exif[k][7:])
+
+        self.db[Tables.EXIF.value].insert_all(
+            [exif],
+            pk=Columns.HASH.value,
+            batch_size=10,
+            alter=True,
+        )
+
+    def drop_exif(self):
+        self.db[Tables.EXIF.value].drop(ignore=True)
+        self.indexes = list()
+
+    def check_exist_or_ignore(self, file_hash: str):
+        try:
+            item = self.db[Tables.FILES.value].get(file_hash)
+            if item[Columns.IMPORTED.value]:
+                return 1
+            if item[Columns.IGNORE.value]:
+                return 2
+        except sqlite_utils.db.NotFoundError:
+            return 0
+        return 3
+
+    def calculate_nearest(self):
+        self._check_index(self.Index.EXIF_UTC_TIME)
+        for row in self.db[Tables.EXIF.value].rows_where("GPSPosition is null"):
+            self.calculate_nearest_for(row)
+
+    def calculate_nearest_for(self, exif):
+        sql = (
+            "select "
+            f" min(abs(strftime('%s','{exif[Columns.UTC_TIME.value]}') "
+            f" - strftime('%s', {Columns.UTC_TIME.value}))) as delta_sec,"
+            f" file_hash, GPSPosition, GPSLatitude, GPSLongitude, {Columns.UTC_TIME.value}"
+            f" from {Tables.EXIF.value} where GPSPosition not NULL;"
+        )
+
+        for res in self.db.execute(sql=sql):
+            d = {
+                Columns.HASH.value: exif[Columns.HASH.value],
+                Columns.UTC_TIME.value: exif[Columns.UTC_TIME.value],
+                Columns.HASH.value + "_origin": res[1],
+                Columns.UTC_TIME.value + "_origin": res[5],
+                "delta": res[0],
+                "GPSPosition": res[2],
+                "GPSLatitude": res[3],
+                "GPSLongitude": res[4],
+            }
+
+            self.db[Tables.DERIVED_GPS.value].insert_all(
+                [d], pk=[Columns.HASH.value], upsert=True, alter=True
+            )
+
+            return res[1]
 
 
 class ExifTool:
@@ -239,13 +368,14 @@ class OSMResolver:
     URL = "https://nominatim.openstreetmap.org/reverse"
     HEADERS = {"user-agent": "photo-woylie"}
 
-    def __init__(self, file_name: Path, lang=None):
+    def __init__(self, file_name: Path, mdb: MetadataBase, lang=None):
         print("🗺️  Geo data provided by OpenStreetmap:")
         print("🗺️ -|> © OpenStreetMap contributors")
         print("🗺️ -|> url: https://www.openstreetmap.org/copyright")
 
         self.lang = lang
         self.file_name = file_name.with_suffix(f".{lang}.json") if lang else file_name
+        self.mdb = mdb
         if file_name is not None and file_name.exists():
             file = file_name.open("r")
             self.cache = json.load(file)
@@ -267,7 +397,8 @@ class OSMResolver:
     def resolve(self, lat, lon):
         if lat is not None and lon is not None:
             # All requests should be cached: https://operations.osmfoundation.org/policies/nominatim/
-            js = self._resolve_cache(lat, lon)
+            #js = self._resolve_cache(lat, lon)
+            js = self.mdb.osm_cache_resolve(float(lat), float(lon))
 
             # Cache miss
             if js is None:
@@ -281,6 +412,7 @@ class OSMResolver:
                 if r.status_code == 200:
                     js = r.json()
                     self.cache.append(js)
+                    self.mdb.add_osm(js)
 
             return js
 
@@ -532,85 +664,7 @@ class FileImporter:
             if f.value.startswith("by-"):
                 p = self.base_path / f.value
                 for file in p.rglob(self.datetime_filename):
-                    # file.unlink()
-                    print("would delete: ", file)
-
-
-class MetadataBase:
-    index = {
-        "exif_utc_time": "CREATE INDEX exif_utc_time ON exif (utc_time);",
-        "exif_hash_file": "CREATE UNIQUE INDEX exif_hash_file ON exif (file_hash);",
-    }
-
-    def __init__(self, path: Path):
-        self.db = sqlite_utils.Database(path)
-        self.has_indexes = False
-
-    def add_origin_data(self, d: dict):
-        self.db[Tables.TABLE_FILES.value].insert_all(
-            [d], pk=Columns.HASH.value, upsert=True, alter=True
-        )
-
-    def add_exif_data(self, exif: dict):
-
-        for k in exif:
-            if isinstance(exif[k], str) and exif[k].startswith("base64:"):
-                exif[k] = base64.b64decode(exif[k][7:])
-
-        self.db[Tables.TABLE_EXIF.value].insert_all(
-            [exif],
-            pk=Columns.HASH.value,
-            batch_size=10,
-            alter=True,
-        )
-
-    def drop_exif(self):
-        self.db[Tables.TABLE_EXIF.value].drop(ignore=True)
-
-    def check_exist_or_ignore(self, file_hash: str):
-        try:
-            item = self.db[Tables.TABLE_FILES.value].get(file_hash)
-            if item[Columns.IMPORTED.value]:
-                return 1
-            if item[Columns.IGNORE.value]:
-                return 2
-        except sqlite_utils.db.NotFoundError:
-            return 0
-        return 3
-
-    def check_create_index(self):
-
-        for i in self.index:
-            check_sql = f"select count(*)  from sqlite_master where name = '{i}' and type='index'"
-
-            for x in self.db.query(check_sql):
-                print(x)
-
-    def calculate_nearest(self):
-        for row in self.db[Tables.TABLE_EXIF.value].rows_where("GPSPosition is null"):
-            sql = (
-                "select "
-                f" min(abs(strftime('%s','{row[Columns.UTC_TIME.value]}') "
-                f" - strftime('%s', {Columns.UTC_TIME.value}))) as delta_sec,"
-                f" file_hash, GPSPosition, GPSLatitude, GPSLongitude, {Columns.UTC_TIME.value}"
-                f" from {Tables.TABLE_EXIF.value} where GPSPosition not NULL;"
-            )
-
-            for res in self.db.execute(sql=sql):
-                d = {
-                    Columns.HASH.value: row[Columns.HASH.value],
-                    Columns.UTC_TIME.value: row[Columns.UTC_TIME.value],
-                    Columns.HASH.value + "_origin": res[1],
-                    Columns.UTC_TIME.value + "_origin": res[5],
-                    "delta": res[0],
-                    "GPSPosition": res[2],
-                    "GPSLatitude": res[3],
-                    "GPSLongitude": res[4],
-                }
-
-                self.db[Tables.DERIVED.value].insert_all(
-                    [d], pk=[Columns.HASH.value], upsert=True, alter=True
-                )
+                    file.unlink()
 
 
 class PhotoWoylie:
@@ -647,14 +701,18 @@ class PhotoWoylie:
 
         self.hardlink = hardlink
 
-        self.bootstrap_directory_structure()
+        self.lang = lang
 
-        self.osm = OSMResolver(
-            self.base_path / Folders.DATA.value / Files.OSM_CACHE.value, lang=lang
-        )
+        self.bootstrap_directory_structure()
 
         self.mdb = MetadataBase(
             self.base_path / Folders.DATA.value / Files.DATABASE.value
+        )
+
+        self.osm = OSMResolver(
+            self.base_path / Folders.DATA.value / Files.OSM_CACHE.value,
+            mdb=self.mdb,
+            lang=lang,
         )
 
         self.ignore_path = IGNORE_PATH
@@ -743,7 +801,7 @@ class PhotoWoylie:
             print(f"ℹ️ files with errors: {self.count_error}")
             del exiftool
 
-    def rebuild(self):
+    def rebuild(self, reset=False):
         rebuild_trace = self.base_path.joinpath(
             Folders.LOG.value, f"rebuild-{self.start_time}.log"
         ).open("w")
@@ -760,9 +818,15 @@ class PhotoWoylie:
             shutil.rmtree(f, ignore_errors=True)
             f.mkdir()
 
-        rebuild_trace.write(f"dropping table: {Tables.TABLE_EXIF.value}")
-        print(f"dropping table: {Tables.TABLE_EXIF.value}")
-        self.mdb.drop_exif()
+        if reset:
+            dbfile = self.base_path / Folders.DATA.value / Files.DATABASE.value
+            dbfile.unlink()
+            self.mdb = MetadataBase(dbfile)
+            self.osm.mdb = self.mdb
+        else:
+            rebuild_trace.write(f"dropping table: {Tables.EXIF.value}")
+            print(f"dropping table: {Tables.EXIF.value}")
+            self.mdb.drop_exif()
 
         exiftool = ExifTool()
         # go through all files in hash-lib
@@ -822,12 +886,12 @@ class PhotoWoylie:
 
                 fi.delete_links()
 
-                trace.write("Removed!\t%s\n" % fi.flags)
+                trace.write("🗑️  Removed!\t%s\n" % fi.flags)
                 print("🗑️  Removed: ", fi.flags)
 
             else:
-                trace.write("\t♻️ not existing\n")
-                print("♻️  Existed ")
+                trace.write("\t🏳️ not existing\n")
+                print("🏳️️ not Existed")
 
         except (RuntimeError, PermissionError) as e:
             trace.write("❌ERROR %s\n\n" % e)
