@@ -113,7 +113,7 @@ def import_files(
     required=True,
 )
 @click.argument(
-    "delete-path",
+    "remove-path",
     nargs=-1,
     type=click.Path(exists=True, file_okay=True, dir_okay=True, allow_dash=False),
     required=True,
@@ -142,17 +142,23 @@ def remove(
     required=True,
 )
 @common_options
+@click.option(
+    "--reset",
+    help="reset all metadata, including import history and cache",
+    is_flag=True,
+)
 def rebuild(
     base_path,
     symlink=False,
     dump_exif=False,
     language=None,
+    reset=False,
 ):
     """rebuild the library"""
     woylie = PhotoWoylie(
         base_path=base_path, hardlink=not symlink, dump_exif=dump_exif, lang=language
     )
-    woylie.rebuild()
+    woylie.rebuild(reset=reset)
 
 
 @cli.command()
