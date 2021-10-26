@@ -162,6 +162,7 @@ def rebuild(
 
 
 @cli.command()
+@common_options
 @click.argument(
     "base-path",
     nargs=1,
@@ -170,10 +171,15 @@ def rebuild(
 )
 def infer(
     base_path,
+    symlink=False,
+    dump_exif=False,
+    language=None,
 ):
-    """ infer Metadata from existing"""
-    db = MetadataBase(Path(base_path) / Folders.DATA.value / Files.DATABASE.value)
-    db.calculate_nearest()
+    """ infer Metadata from existing pictures in the database and link them"""
+    woylie = PhotoWoylie(
+        base_path=base_path, hardlink=not symlink, dump_exif=dump_exif, lang=language
+    )
+    woylie.infer()
 
 
 if "__main__" == __name__:

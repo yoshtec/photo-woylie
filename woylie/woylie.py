@@ -176,9 +176,12 @@ class MetadataBase:
     """
     Encapsulates the Database
     """
+
     class Index(enum.Enum):
         EXIF_UTC_TIME = f"CREATE INDEX exif_utc_time ON {Tables.EXIF.value} (utc_time);"
-        EXIF_HASH_FILE = f"CREATE UNIQUE INDEX exif_hash_file ON {Tables.EXIF.value} (file_hash);"
+        EXIF_HASH_FILE = (
+            f"CREATE UNIQUE INDEX exif_hash_file ON {Tables.EXIF.value} (file_hash);"
+        )
         OSM_BOUNDING_BOX = f"CREATE INDEX osm_bounding_box ON {Tables.OSM_CACHE.value} (b0, b1, b2, b3);"
 
     def __init__(self, path: Path):
@@ -191,7 +194,7 @@ class MetadataBase:
 
     def _check_and_create_index(self, index: Index):
 
-        check_sql = f"select count(*) from sqlite_master where name = '{index.member.lower()}' and type='index'"
+        check_sql = f"select count(*) from sqlite_master where name = '{index.name.lower()}' and type='index'"
 
         exists = False
         for x in self.db.query(check_sql):
@@ -258,6 +261,10 @@ class MetadataBase:
             return 0
         return 3
 
+    def get_empty_gps_files(self):
+        sql = ""  # TODO infer only for non fixed
+        return self.db[Tables.EXIF.value].rows_where("GPSPosition is null")
+
     def calculate_nearest(self):
         self._check_index(self.Index.EXIF_UTC_TIME)
         for row in self.db[Tables.EXIF.value].rows_where("GPSPosition is null"):
@@ -288,7 +295,7 @@ class MetadataBase:
                 [d], pk=[Columns.HASH.value], upsert=True, alter=True
             )
 
-            return res[1]
+            return res[3], res[4]
 
 
 class ExifTool:
@@ -365,39 +372,24 @@ class ExifTool:
 
 
 class OSMResolver:
+    """
+    OpenStreetMap Resolver resolves geocoordinates to location names, so linking can be executed
+    """
+
     URL = "https://nominatim.openstreetmap.org/reverse"
     HEADERS = {"user-agent": "photo-woylie"}
 
-    def __init__(self, file_name: Path, mdb: MetadataBase, lang=None):
+    def __init__(self, mdb: MetadataBase, lang=None):
         print("🗺️  Geo data provided by OpenStreetmap:")
         print("🗺️ -|> © OpenStreetMap contributors")
         print("🗺️ -|> url: https://www.openstreetmap.org/copyright")
 
         self.lang = lang
-        self.file_name = file_name.with_suffix(f".{lang}.json") if lang else file_name
         self.mdb = mdb
-        if file_name is not None and file_name.exists():
-            file = file_name.open("r")
-            self.cache = json.load(file)
-            file.close()
-        else:
-            self.cache = []
-
-    def _resolve_cache(self, lat, lon):
-        # TODO: this could be a lot smarter
-        for item in self.cache:
-            if "boundingbox" in item:
-                x = item["boundingbox"]
-                if float(x[0]) < float(lat) < float(x[1]) and float(x[2]) < float(
-                    lon
-                ) < float(x[3]):
-                    return item
-        return None
 
     def resolve(self, lat, lon):
         if lat is not None and lon is not None:
             # All requests should be cached: https://operations.osmfoundation.org/policies/nominatim/
-            #js = self._resolve_cache(lat, lon)
             js = self.mdb.osm_cache_resolve(float(lat), float(lon))
 
             # Cache miss
@@ -411,7 +403,6 @@ class OSMResolver:
 
                 if r.status_code == 200:
                     js = r.json()
-                    self.cache.append(js)
                     self.mdb.add_osm(js)
 
             return js
@@ -445,14 +436,6 @@ class OSMResolver:
                 return Path(osmjs["address"]["country"]) / Path(f"lat_{lat}_lon_{lon}")
         elif "display_name" in osmjs:
             return Path(osmjs["display_name"])
-
-    def cache_write(self):
-        file = self.file_name.open("w")
-        json.dump(self.cache, file, indent=4)
-        file.close()
-
-    def __del__(self):
-        self.cache_write()
 
 
 class FileImporter:
@@ -570,12 +553,15 @@ class FileImporter:
 
         if tk.as_utc_normalized():
             self.datetime_filename = (
-                tk.as_utc_normalized()[0:19] + "_" + self.file_hash[0:8] + self.ext
+                tk.as_utc_normalized()[0:19].replace(":", "-").replace("T", "_")
+                + "_"
+                + self.file_hash[0:8]
+                + self.ext
             )
         else:
             self.datetime_filename = "0000-00-00_" + self.file_hash[0:8] + self.ext
 
-        self.imported = True
+        # self.imported = True
 
     def _link(self, link_name: Path):
         if self.deleted:  # essentially unlinking again deleted files
@@ -627,7 +613,9 @@ class FileImporter:
             gpspos = self.exif["GPSPosition"].split()
             lat = gpspos[0]
             lon = gpspos[1]
+        self.link_gps_coordinates(osm, lat, lon)
 
+    def link_gps_coordinates(self, osm: OSMResolver, lat, lon):
         if lat is not None and lon is not None:
             osmpath = osm.resolve_name(lat, lon)
             self._link(
@@ -661,10 +649,18 @@ class FileImporter:
 
     def delete_links(self):
         for f in Folders:
-            if f.value.startswith("by-"):
-                p = self.base_path / f.value
-                for file in p.rglob(self.datetime_filename):
-                    file.unlink()
+            self._delete_link(f.value)
+
+    def delete_link_location(self):
+        if self.exif is None:
+            self._load_exif()
+        self._delete_link(Folders.BY_LOCATION.value)
+
+    def _delete_link(self, folder: str):
+        if folder.startswith("by-"):
+            p = self.base_path / folder
+            for file in p.rglob(self.datetime_filename):
+                file.unlink()
 
 
 class PhotoWoylie:
@@ -710,7 +706,6 @@ class PhotoWoylie:
         )
 
         self.osm = OSMResolver(
-            self.base_path / Folders.DATA.value / Files.OSM_CACHE.value,
             mdb=self.mdb,
             lang=lang,
         )
@@ -779,7 +774,6 @@ class PhotoWoylie:
                 ).open("w")
                 json.dump(self.exif_dump, json_file, indent=4)
 
-            self.osm.cache_write()
             del exiftool
 
     def remove_files(self, delete_path: os.PathLike, recursive: bool = True):
@@ -834,6 +828,54 @@ class PhotoWoylie:
             path = self.base_path / Folders.HASH_LIB.value / h
             for p in path.iterdir():
                 self.rebuild_file(p, exiftool=exiftool, trace=rebuild_trace)
+
+    def infer(self):
+        infer_trace = self.base_path.joinpath(
+            Folders.LOG.value, f"infer-{self.start_time}.log"
+        ).open("w")
+
+        exiftool = ExifTool()
+
+        count_inferred = 0
+
+        try:
+            for row in self.mdb.get_empty_gps_files():
+                filename = row["FileName"]
+
+                print(f"▶️ File: {filename}", end=" ")
+
+                fi = FileImporter(
+                    base_path=self.base_path,
+                    filename=Path(filename),
+                    exiftool=exiftool,
+                    start_time=self.start_time,
+                    file_hash=row[Columns.HASH.value],
+                )
+
+                fi.delete_link_location()
+
+                lat, lon = self.mdb.calculate_nearest_for(row)
+
+                fi.link_gps_coordinates(self.osm, lat, lon)
+
+                count_inferred += 1
+
+                print(fi.flags)
+
+        except Exception:
+            raise
+        finally:
+            print("-->")
+            print(f"ℹ️ inferred files: {count_inferred}")
+            logging.info(f"found files: {count_inferred}, ")
+
+            if self.dump_exif:
+                json_file = self.base_path.joinpath(
+                    Folders.LOG.value, f"exif-{self.start_time}.json"
+                ).open("w")
+                json.dump(self.exif_dump, json_file, indent=4)
+
+            del exiftool
 
     def file_digger(self, path: Path, recursive: bool = True):
         if not path.exists():
