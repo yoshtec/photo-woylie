@@ -179,10 +179,10 @@ class MetadataBase:
 
     class Index(enum.Enum):
         EXIF_UTC_TIME = f"CREATE INDEX exif_utc_time ON {Tables.EXIF.value} (utc_time);"
+        OSM_BOUNDING_BOX = f"CREATE INDEX osm_bounding_box ON {Tables.OSM_CACHE.value} (b0, b1, b2, b3);"
         EXIF_HASH_FILE = (
             f"CREATE UNIQUE INDEX exif_hash_file ON {Tables.EXIF.value} (file_hash);"
         )
-        OSM_BOUNDING_BOX = f"CREATE INDEX osm_bounding_box ON {Tables.OSM_CACHE.value} (b0, b1, b2, b3);"
 
     def __init__(self, path: Path):
         self.db = sqlite_utils.Database(path)
@@ -218,11 +218,12 @@ class MetadataBase:
         )
 
     def osm_cache_resolve(self, lat, lon):
+        if Tables.OSM_CACHE.value not in self.db.table_names():
+            return None
+
         self._check_index(self.Index.OSM_BOUNDING_BOX)
 
-        sql = f"select * from {Tables.OSM_CACHE.value} where {lat} > b0 AND {lat} < b1 AND {lon} > b2 AND {lon} < b3"
-
-        for x in self.db.query(sql):
+        for x in self.db[Tables.OSM_CACHE.value].rows_where(f"{lat} > b0 AND {lat} < b1 AND {lon} > b2 AND {lon} < b3"):
             if "address" in x:
                 temp = json.loads(x["address"])
                 x["address"] = temp
@@ -247,10 +248,13 @@ class MetadataBase:
         )
 
     def drop_exif(self):
-        self.db[Tables.EXIF.value].drop(ignore=True)
-        self.indexes = list()
+        if Tables.EXIF.value in self.db.table_names():
+            self.db[Tables.EXIF.value].drop(ignore=True)
+            self.indexes = list()
 
     def check_exist_or_ignore(self, file_hash: str):
+        if Tables.FILES.value not in self.db.table_names():
+            return 0
         try:
             item = self.db[Tables.FILES.value].get(file_hash)
             if item[Columns.IMPORTED.value]:
@@ -262,15 +266,20 @@ class MetadataBase:
         return 3
 
     def get_empty_gps_files(self):
-        sql = ""  # TODO infer only for non fixed
-        return self.db[Tables.EXIF.value].rows_where("GPSPosition is null")
+        if Tables.EXIF.value in self.db.table_names():
+            sql = ""  # TODO infer only for non fixed
+            return self.db[Tables.EXIF.value].rows_where("GPSPosition is null")
 
     def calculate_nearest(self):
-        self._check_index(self.Index.EXIF_UTC_TIME)
-        for row in self.db[Tables.EXIF.value].rows_where("GPSPosition is null"):
-            self.calculate_nearest_for(row)
+        if Tables.EXIF.value in self.db.table_names():
+            self._check_index(self.Index.EXIF_UTC_TIME)
+            for row in self.db[Tables.EXIF.value].rows_where("GPSPosition is null"):
+                self.calculate_nearest_for(row)
 
     def calculate_nearest_for(self, exif):
+        if Tables.EXIF.value not in self.db.table_names():
+            return None, None
+
         sql = (
             "select "
             f" min(abs(strftime('%s','{exif[Columns.UTC_TIME.value]}') "
