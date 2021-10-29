@@ -223,7 +223,9 @@ class MetadataBase:
 
         self._check_index(self.Index.OSM_BOUNDING_BOX)
 
-        for x in self.db[Tables.OSM_CACHE.value].rows_where(f"{lat} > b0 AND {lat} < b1 AND {lon} > b2 AND {lon} < b3"):
+        for x in self.db[Tables.OSM_CACHE.value].rows_where(
+            f"{lat} > b0 AND {lat} < b1 AND {lon} > b2 AND {lon} < b3"
+        ):
             if "address" in x:
                 temp = json.loads(x["address"])
                 x["address"] = temp
@@ -402,9 +404,10 @@ class OSMResolver:
             js = self.mdb.osm_cache_resolve(float(lat), float(lon))
 
             # Cache miss
-            if js is None:
+            retry = 0
+            while js is None and retry < 4:
                 # Documentation https://nominatim.org/release-docs/develop/api/Reverse/
-                params = {"format": "jsonv2", "zoom": 12, "lat": lat, "lon": lon}
+                params = {"format": "jsonv2", "zoom": 14, "lat": lat, "lon": lon}
                 if self.lang:
                     params["accept-language"] = self.lang
 
@@ -413,6 +416,10 @@ class OSMResolver:
                 if r.status_code == 200:
                     js = r.json()
                     self.mdb.add_osm(js)
+                else:
+                    print(f"Error while accessing: retcode={r.status_code}, for {r.request} ")
+
+                retry += 1
 
             return js
 
@@ -422,27 +429,31 @@ class OSMResolver:
         if not osmjs:
             print(f"🗺️  Result for OpenStreetMap: lat={lat}, lon={lon}")
             print(f"🗺️  Query result: {osmjs}")
-            return Path("Unknown") / Path(f"lat_{lat}_lon_{lon}")
+            return Path("_Unknown") / Path(f"_lat_{lat}_lon_{lon}")
 
         if "address" in osmjs and "country" in osmjs["address"]:
-            if "city" in osmjs["address"]:
-                return Path(osmjs["address"]["country"], osmjs["address"]["city"])
-            elif "village" in osmjs["address"]:
-                return Path(osmjs["address"]["country"], osmjs["address"]["village"])
-            elif "municipality" in osmjs["address"]:
-                return Path(
-                    osmjs["address"]["country"], osmjs["address"]["municipality"]
-                )
-            elif "town" in osmjs["address"]:
-                return Path(osmjs["address"]["country"], osmjs["address"]["town"])
-            elif "state" in osmjs["address"]:
-                return Path(osmjs["address"]["country"], osmjs["address"]["state"])
-            elif "county" in osmjs["address"]:
-                return Path(osmjs["address"]["country"], osmjs["address"]["county"])
+            address = osmjs["address"]
+            path = Path(osmjs["address"]["country"])
+
+            if "archipelago" in address:
+                path = path / Path(address["archipelago"])
+
+            if "city" in address:
+                return Path(path, address["city"])
+            elif "village" in address:
+                return Path(path, address["village"])
+            elif "municipality" in address:
+                return Path(path, address["municipality"])
+            elif "town" in address:
+                return Path(path, address["town"])
+            elif "state" in address:
+                return Path(path, address["state"])
+            elif "county" in address:
+                return Path(path, address["county"])
             else:
                 print(f"🗺️  Result for OpenStreetMap: lat={lat}, lon={lon}")
                 print(f"🗺️  Query result: {osmjs}")
-                return Path(osmjs["address"]["country"]) / Path(f"lat_{lat}_lon_{lon}")
+                return path / Path(f"_lat_{lat}_lon_{lon}")
         elif "display_name" in osmjs:
             return Path(osmjs["display_name"])
 
@@ -569,8 +580,6 @@ class FileImporter:
             )
         else:
             self.datetime_filename = "0000-00-00_" + self.file_hash[0:8] + self.ext
-
-        # self.imported = True
 
     def _link(self, link_name: Path):
         if self.deleted:  # essentially unlinking again deleted files
@@ -860,6 +869,7 @@ class PhotoWoylie:
                     start_time=self.start_time,
                     file_hash=row[Columns.HASH.value],
                 )
+                fi.load_file()
 
                 fi.delete_link_location()
 
