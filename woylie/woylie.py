@@ -71,7 +71,17 @@ EXTENSIONS_PIC = [
 EXTENSIONS_MOV = [".mov", ".mts", ".mp4", ".m4v"]
 EXTENSIONS_RAW = [".raw", ".arw"]
 
-IGNORE_PATH = [".AppleDouble", ".git", ".hg", ".svn", ".bzr"]
+IGNORE_PATH = [
+    ".AppleDouble",
+    ".git",
+    ".hg",
+    ".svn",
+    ".bzr",
+    "node_modules",
+    ".idea",
+    ".gradle",
+    ".cache",
+]
 IGNORE_FILE_PATTERN = ["._*"]
 
 # Ignore the following Tags from exif metadata:
@@ -247,6 +257,7 @@ class MetadataBase:
             pk=Columns.HASH.value,
             batch_size=10,
             alter=True,
+            upsert=True,
         )
 
     def drop_exif(self):
@@ -266,6 +277,14 @@ class MetadataBase:
         except sqlite_utils.db.NotFoundError:
             return 0
         return 3
+
+    def get_last_imports(self):
+        if Tables.FILES.value in self.db.table_names():
+            # sql = f"select max({Columns.IMPORTED_AT}) from {Tables.FILES.value}"
+
+            return self.db[Tables.FILES.value].rows_where(
+                f"{Columns.IMPORTED_AT.value} = (select max({Columns.IMPORTED_AT.value}) from {Tables.FILES.value})"
+            )
 
     def get_empty_gps_files(self):
         if Tables.EXIF.value in self.db.table_names():
@@ -307,6 +326,10 @@ class MetadataBase:
             )
 
             return res[3], res[4]
+
+    def get_stats(self):
+        sql = ()
+        return ""
 
 
 class ExifTool:
@@ -391,12 +414,14 @@ class OSMResolver:
     HEADERS = {"user-agent": "photo-woylie"}
 
     def __init__(self, mdb: MetadataBase, lang=None):
-        print("🗺️  Geo data provided by OpenStreetmap:")
-        print("🗺️ -|> © OpenStreetMap contributors")
-        print("🗺️ -|> url: https://www.openstreetmap.org/copyright")
-
         self.lang = lang
         self.mdb = mdb
+
+    @staticmethod
+    def print_osm_info(self):
+        print("🗺️  Geo data provided by OpenStreetMap:")
+        print("🗺️ -|> © OpenStreetMap contributors")
+        print("🗺️ -|> url: https://www.openstreetmap.org/copyright")
 
     def resolve(self, lat, lon):
         if lat is not None and lon is not None:
@@ -417,7 +442,9 @@ class OSMResolver:
                     js = r.json()
                     self.mdb.add_osm(js)
                 else:
-                    print(f"Error while accessing: retcode={r.status_code}, for {r.request} ")
+                    print(
+                        f"Error while accessing: retcode={r.status_code}, for {r.request} "
+                    )
 
                 retry += 1
 
@@ -538,13 +565,13 @@ class FileImporter:
 
         self.imported = True
 
-    def delete_file(self):
+    def delete_file(self, ignore=True):
         if self.full_path.exists():
             self.flags.append("🗑️")
             self._load_exif()
             self.full_path.unlink()
             self.deleted = True
-        self.ignore = True
+        self.ignore = ignore
 
     def ignore_file(self):
         self.ignore = True
@@ -621,7 +648,7 @@ class FileImporter:
         )
         self.flags.append("🕘")
 
-    def link_gps(self, osm: OSMResolver):
+    def _get_lat_lon(self):
         lat = None
         lon = None
         if "GPSLatitude" in self.exif and "GPSLongitude" in self.exif:
@@ -631,6 +658,10 @@ class FileImporter:
             gpspos = self.exif["GPSPosition"].split()
             lat = gpspos[0]
             lon = gpspos[1]
+        return lat, lon
+
+    def link_gps(self, osm: OSMResolver):
+        lat, lon = self._get_lat_lon()
         self.link_gps_coordinates(osm, lat, lon)
 
     def link_gps_coordinates(self, osm: OSMResolver, lat, lon):
@@ -644,18 +675,19 @@ class FileImporter:
             )
             self.flags.append("🌍")
 
-    def link_camera(self):
+    def _get_camera_name(self):
         name = ""
-
         if "UserComment" in self.exif and self.exif["UserComment"] == "Screenshot":
             name = "Screenshot"
-
         if "Make" in self.exif:
             name = self.exif["Make"]
-
         if "Model" in self.exif:
             name += " " + self.exif["Model"]
+        return name
 
+    def link_camera(self):
+
+        name = self._get_camera_name()
         if name != "":
             self._link(
                 self.base_path
@@ -679,6 +711,15 @@ class FileImporter:
             p = self.base_path / folder
             for file in p.rglob(self.datetime_filename):
                 file.unlink()
+
+    def get_full_info(self):
+        res = dict()
+        res["origin"] = self.get_origin()
+        res["exif"] = self.exif
+        res["get_lat_lon"] = self._get_lat_lon()
+        res["get_camera_name"] = self._get_camera_name()
+        res["datetime_filename"] = self.datetime_filename
+        return res
 
 
 class PhotoWoylie:
@@ -768,7 +809,7 @@ class PhotoWoylie:
 
         try:
             for file in self.file_digger(Path(import_path), recursive):
-                self.import_file(file, import_trace, exiftool)
+                self._import_file(file, import_trace, exiftool)
 
         except Exception:
             raise
@@ -786,12 +827,7 @@ class PhotoWoylie:
                 f"ignored: {self.count_ignored}"
             )
 
-            if self.dump_exif:
-                json_file = self.base_path.joinpath(
-                    Folders.LOG.value, f"exif-{self.start_time}.json"
-                ).open("w")
-                json.dump(self.exif_dump, json_file, indent=4)
-
+            self._dump_exif()
             del exiftool
 
     def remove_files(self, delete_path: os.PathLike, recursive: bool = True):
@@ -803,7 +839,36 @@ class PhotoWoylie:
 
         try:
             for file in self.file_digger(Path(delete_path), recursive):
-                self.remove_file(file, delete_trace, exiftool)
+                self._remove_file(file, delete_trace, exiftool, ignore=True)
+        except Exception:
+            raise
+        finally:
+            print("-->")
+            print(f"ℹ️ scanned files: {self.count_scanned}")
+            print(f"ℹ️ removed files: {self.count_deleted}")
+            print(f"ℹ️ files with errors: {self.count_error}")
+            del exiftool
+
+    def undo_import(self):
+        undo_trace = self.base_path.joinpath(
+            Folders.LOG.value, f"undo-{self.start_time}.log"
+        ).open("w")
+
+        exiftool = ExifTool()
+
+        try:
+            for imp in self.mdb.get_last_imports():
+                file = Path(
+                    self.base_path,
+                    Folders.HASH_LIB.value,
+                    imp[Columns.HASH.value][0],
+                    imp[Columns.HASH.value] + imp[Columns.EXTENSION.value],
+                )
+                print(
+                    f"Undo Import: original='{imp[Columns.ORIGIN_FILE.value]}' importedAt={imp[Columns.IMPORTED_AT.value]}"
+                )
+                self._remove_file(file, undo_trace, exiftool, ignore=False)
+
         except Exception:
             raise
         finally:
@@ -841,11 +906,23 @@ class PhotoWoylie:
             self.mdb.drop_exif()
 
         exiftool = ExifTool()
-        # go through all files in hash-lib
-        for h in "0123456789abcdef":
-            path = self.base_path / Folders.HASH_LIB.value / h
-            for p in path.iterdir():
-                self.rebuild_file(p, exiftool=exiftool, trace=rebuild_trace)
+        count_rebuild = 0
+        try:
+            # go through all files in hash-lib
+            for h in "0123456789abcdef":
+                path = self.base_path / Folders.HASH_LIB.value / h
+                for p in path.iterdir():
+                    self._rebuild_file(p, exiftool=exiftool, trace=rebuild_trace)
+                    count_rebuild += 1
+        except Exception as e:
+            print("Error while rebuilding")
+            raise
+        finally:
+            print("-->")
+            print(f"ℹ️ rebuild files: {count_rebuild}")
+            print(f"ℹ️ rebuild errors: {self.count_error}")
+            self._dump_exif()
+            del exiftool
 
     def infer(self):
         infer_trace = self.base_path.joinpath(
@@ -860,6 +937,7 @@ class PhotoWoylie:
             for row in self.mdb.get_empty_gps_files():
                 filename = row["FileName"]
 
+                infer_trace.write(f"▶️ File: {filename}")
                 print(f"▶️ File: {filename}", end=" ")
 
                 fi = FileImporter(
@@ -881,47 +959,51 @@ class PhotoWoylie:
 
                 print(fi.flags)
 
-        except Exception:
+        except Exception as e:
+            infer_trace.write(f"ERROR: Exception: {e}")
             raise
         finally:
             print("-->")
             print(f"ℹ️ inferred files: {count_inferred}")
-            logging.info(f"found files: {count_inferred}, ")
+            infer_trace.write(f"found files: {count_inferred}")
 
-            if self.dump_exif:
-                json_file = self.base_path.joinpath(
-                    Folders.LOG.value, f"exif-{self.start_time}.json"
-                ).open("w")
-                json.dump(self.exif_dump, json_file, indent=4)
+            self._dump_exif()
 
             del exiftool
 
     def file_digger(self, path: Path, recursive: bool = True):
         if not path.exists():
             pass  # ignore nonexisting paths and files
-        elif path.is_dir():
-            stop_file = path.joinpath(Files.STOP.value)  # stop if there is a stop file
-            if stop_file.exists():
-                print(f"⏸️ Found a stop-file in: {stop_file}")
-            elif path.parts[-1] in self.ignore_path:
-                print(f"⏸️ ignoring path: {path}")
-            else:
-                for p in path.iterdir():
-                    yield from self.file_digger(p, recursive)
+        elif (
+            path.is_dir() and not path.is_symlink()
+        ):  # do not follow symlink directories
+            try:
+                stop_file = path.joinpath(
+                    Files.STOP.value
+                )  # stop if there is a stop file
+                if stop_file.exists():
+                    print(f"⏸️ Found a stop-file in: {stop_file}")
+                elif path.parts[-1] in self.ignore_path:
+                    print(f"⏸️ ignoring path: {path}")
+                else:
+                    for p in path.iterdir():
+                        yield from self.file_digger(p, recursive)
+            except PermissionError as e:
+                print(f"⏸️ access denied to path: {path}")
         elif (
             path.is_file()
             and path.suffix.lower() in self.extensions
-            and not self.ignore_file(path.name)
+            and not self._ignore_file(path.name)
         ):
             yield path
 
-    def ignore_file(self, file: str) -> bool:
+    def _ignore_file(self, file: str) -> bool:
         for ignore_pattern in self.ignore_file_patterns:
             if fnmatch.fnmatch(file, ignore_pattern):
                 return True
         return False
 
-    def remove_file(self, filename: Path, trace, exiftool: ExifTool):
+    def _remove_file(self, filename: Path, trace, exiftool: ExifTool, ignore: bool):
         try:
             print(f"▶️ File: {filename}", end=" ")
             trace.write("%s\t" % filename.absolute())
@@ -936,7 +1018,7 @@ class PhotoWoylie:
 
             self.count_scanned += 1
 
-            fi.delete_file()
+            fi.delete_file(ignore=ignore)
 
             self.mdb.add_origin_data(fi.get_origin())
 
@@ -964,7 +1046,7 @@ class PhotoWoylie:
             print("❌  Error")
             raise
 
-    def import_file(self, filename: Path, trace, exiftool: ExifTool):
+    def _import_file(self, filename: Path, trace, exiftool: ExifTool):
         try:
             print("▶️ File:", filename, end=" ")
             trace.write("%s\t" % filename.absolute())
@@ -1019,7 +1101,7 @@ class PhotoWoylie:
             print("❌  Error")
             raise
 
-    def rebuild_file(self, filename: Path, trace, exiftool: ExifTool):
+    def _rebuild_file(self, filename: Path, trace, exiftool: ExifTool):
         try:
             print("▶️ File:", filename, end=" ")
             trace.write("%s\t" % filename.absolute())
@@ -1043,7 +1125,7 @@ class PhotoWoylie:
 
             self._save_exif(fi)
 
-            trace.write("✅ OK!\t%s\n" % fi.flags)
+            trace.write("✅ Rebuild!\t%s\n" % fi.flags)
             print("✅  Rebuild: ", fi.flags)
 
         except (RuntimeError, PermissionError) as e:
@@ -1056,11 +1138,36 @@ class PhotoWoylie:
             print("❌  Error")
             raise
 
+    def stats(self):
+        stats = self.mdb.get_stats()
+        print("")
+        print()
+
+    def file_info(self, file: Path):
+        exiftool = ExifTool()
+
+        fi = FileImporter(
+            self.base_path,
+            file,
+            exiftool=exiftool,
+            start_time=self.start_time,
+            hardlink=self.hardlink,
+        )
+        fi.load_file()
+
+        print(json.dumps(fi.get_full_info(), indent=4))
+
     def _save_exif(self, fi):
+        self.mdb.add_exif_data(fi.exif)
         if self.dump_exif:
             self.exif_dump.append(fi.exif)
 
-        self.mdb.add_exif_data(fi.exif)
+    def _dump_exif(self):
+        if self.dump_exif:
+            json_file = self.base_path.joinpath(
+                Folders.LOG.value, f"exif-{self.start_time}.json"
+            ).open("w")
+            json.dump(self.exif_dump, json_file, indent=4)
 
     def _link_standards(self, fi):
         if self.link_date:

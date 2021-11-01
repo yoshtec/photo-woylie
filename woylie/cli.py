@@ -109,6 +109,24 @@ def import_files(
 @click.argument(
     "base-path",
     nargs=1,
+    type=click.Path(file_okay=False, dir_okay=True, allow_dash=False),
+    required=True,
+)
+def undo_import(
+    base_path,
+):
+    """Undo last import and delete files from the lib"""
+    woylie = PhotoWoylie(
+        base_path=base_path,
+    )
+
+    woylie.undo_import()
+
+
+@cli.command()
+@click.argument(
+    "base-path",
+    nargs=1,
     type=click.Path(exists=True, file_okay=False, dir_okay=True, allow_dash=False),
     required=True,
 )
@@ -180,6 +198,39 @@ def infer(
         base_path=base_path, hardlink=not symlink, dump_exif=dump_exif, lang=language
     )
     woylie.infer()
+
+
+@cli.command()
+@click.argument(
+    "base-path",
+    nargs=1,
+    type=click.Path(file_okay=False, dir_okay=True, allow_dash=False),
+    required=True,
+)
+def stats(base_path):
+    """ display statistics of the library in base-path"""
+    woylie = PhotoWoylie(base_path=base_path)
+    woylie.stats()
+
+
+@cli.command()
+@click.argument(
+    "base-path",
+    nargs=1,
+    type=click.Path(file_okay=False, dir_okay=True, allow_dash=False),
+    required=True,
+)
+@click.argument(
+    "file",
+    nargs=-1,
+    type=click.Path(file_okay=True, dir_okay=False, allow_dash=False),
+    required=True,
+)
+def fileinfo(base_path, file):
+    """ display information about the file"""
+    woylie = PhotoWoylie(base_path=base_path)
+    for f in file:
+        woylie.file_info(file=Path(f))
 
 
 if "__main__" == __name__:
