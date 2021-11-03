@@ -799,6 +799,16 @@ class PhotoWoylie:
             else:
                 self.extensions.append(e.lower())
 
+    def exclude_extensions(self, extensions):
+        for e in extensions:
+            try:
+                if not e.startswith("."):
+                    self.extensions.remove("." + e.lower())
+                else:
+                    self.extensions.remove(e.lower())
+            except ValueError:
+                print(f"unable to remove extension {e}")
+
     def import_files(self, import_path: os.PathLike, recursive: bool = True):
 
         import_trace = self.base_path.joinpath(
@@ -865,7 +875,8 @@ class PhotoWoylie:
                     imp[Columns.HASH.value] + imp[Columns.EXTENSION.value],
                 )
                 print(
-                    f"Undo Import: original='{imp[Columns.ORIGIN_FILE.value]}' importedAt={imp[Columns.IMPORTED_AT.value]}"
+                    f"Undo Import: original='{imp[Columns.ORIGIN_FILE.value]}' "
+                    f"importedAt={imp[Columns.IMPORTED_AT.value]}"
                 )
                 self._remove_file(file, undo_trace, exiftool, ignore=False)
 

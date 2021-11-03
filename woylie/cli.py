@@ -4,7 +4,7 @@
 
 import sys
 import click
-from woylie.woylie import PhotoWoylie, MetadataBase, Files, Folders
+from woylie.woylie import PhotoWoylie
 from pathlib import Path
 
 
@@ -35,6 +35,38 @@ def common_options(fn):
     return fn
 
 
+def add_ignore_extensions(fn):
+    for decorator in (
+        click.option(
+            "-e",
+            "--include-extensions",
+            "add_extensions",
+            multiple=True,
+            type=click.STRING,
+            help="add_origin extensions to include",
+        ),
+        click.option(
+            "-x",
+            "--exclude-extensions",
+            "exclude_extensions",
+            multiple=True,
+            type=click.STRING,
+            help="extensions to ignore",
+        ),
+    ):
+        fn = decorator(fn)
+    return fn
+
+
+def arg_base_path(fn):
+    return click.argument(
+        "base-path",
+        nargs=1,
+        type=click.Path(file_okay=False, dir_okay=True, allow_dash=False),
+        required=True,
+    )(fn)
+
+
 @click.group()
 @click.version_option()
 def cli():
@@ -62,12 +94,7 @@ def list_extensions():
 
 
 @cli.command()
-@click.argument(
-    "base-path",
-    nargs=1,
-    type=click.Path(file_okay=False, dir_okay=True, allow_dash=False),
-    required=True,
-)
+@arg_base_path
 @click.argument(
     "import-path",
     nargs=-1,
@@ -75,21 +102,15 @@ def list_extensions():
     required=True,
 )
 @common_options
-@click.option(
-    "-e",
-    "--include-extensions",
-    "extensions",
-    multiple=True,
-    type=click.STRING,
-    help="add_origin extensions to include",
-)
+@add_ignore_extensions
 def import_files(
     base_path,
     import_path,
     symlink=False,
     dump_exif=False,
     language=None,
-    extensions=None,
+    add_extensions=None,
+    exclude_extensions=None,
 ):
     """import images and movies to your library"""
     woylie = PhotoWoylie(
@@ -99,19 +120,15 @@ def import_files(
         lang=language,
     )
 
-    woylie.add_extensions(extensions)
+    woylie.add_extensions(add_extensions)
+    woylie.exclude_extensions(exclude_extensions)
 
     for path in import_path:
         woylie.import_files(path)
 
 
 @cli.command()
-@click.argument(
-    "base-path",
-    nargs=1,
-    type=click.Path(file_okay=False, dir_okay=True, allow_dash=False),
-    required=True,
-)
+@arg_base_path
 def undo_import(
     base_path,
 ):
@@ -124,12 +141,7 @@ def undo_import(
 
 
 @cli.command()
-@click.argument(
-    "base-path",
-    nargs=1,
-    type=click.Path(exists=True, file_okay=False, dir_okay=True, allow_dash=False),
-    required=True,
-)
+@arg_base_path
 @click.argument(
     "remove-path",
     nargs=-1,
@@ -137,28 +149,30 @@ def undo_import(
     required=True,
 )
 @common_options
+@add_ignore_extensions
 def remove(
     base_path,
     remove_path,
     symlink=False,
     dump_exif=False,
     language=None,
+    add_extensions=None,
+    exclude_extensions=None,
 ):
     """remove files from the library"""
     woylie = PhotoWoylie(
         base_path=base_path, hardlink=not symlink, dump_exif=dump_exif, lang=language
     )
+
+    woylie.add_extensions(add_extensions)
+    woylie.exclude_extensions(exclude_extensions)
+
     for path in remove_path:
         woylie.remove_files(path)
 
 
 @cli.command()
-@click.argument(
-    "base-path",
-    nargs=1,
-    type=click.Path(exists=True, file_okay=False, dir_okay=True, allow_dash=False),
-    required=True,
-)
+@arg_base_path
 @common_options
 @click.option(
     "--reset",
@@ -181,12 +195,7 @@ def rebuild(
 
 @cli.command()
 @common_options
-@click.argument(
-    "base-path",
-    nargs=1,
-    type=click.Path(file_okay=False, dir_okay=True, allow_dash=False),
-    required=True,
-)
+@arg_base_path
 def infer(
     base_path,
     symlink=False,
@@ -201,12 +210,7 @@ def infer(
 
 
 @cli.command()
-@click.argument(
-    "base-path",
-    nargs=1,
-    type=click.Path(file_okay=False, dir_okay=True, allow_dash=False),
-    required=True,
-)
+@arg_base_path
 def stats(base_path):
     """ display statistics of the library in base-path"""
     woylie = PhotoWoylie(base_path=base_path)
@@ -214,12 +218,7 @@ def stats(base_path):
 
 
 @cli.command()
-@click.argument(
-    "base-path",
-    nargs=1,
-    type=click.Path(file_okay=False, dir_okay=True, allow_dash=False),
-    required=True,
-)
+@arg_base_path
 @click.argument(
     "file",
     nargs=-1,
