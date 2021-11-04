@@ -32,6 +32,7 @@ import enum
 import datetime
 import json
 import shutil
+import time
 
 import sqlite_utils
 import requests
@@ -73,6 +74,8 @@ EXTENSIONS_RAW = [".raw", ".arw"]
 
 IGNORE_PATH = [
     ".AppleDouble",
+    ".DS_Store",
+    ".LSOverride",
     ".git",
     ".hg",
     ".svn",
@@ -416,9 +419,10 @@ class OSMResolver:
     def __init__(self, mdb: MetadataBase, lang=None):
         self.lang = lang
         self.mdb = mdb
+        self.print_osm_info()
 
     @staticmethod
-    def print_osm_info(self):
+    def print_osm_info():
         print("🗺️  Geo data provided by OpenStreetMap:")
         print("🗺️ -|> © OpenStreetMap contributors")
         print("🗺️ -|> url: https://www.openstreetmap.org/copyright")
@@ -427,8 +431,16 @@ class OSMResolver:
         if lat is not None and lon is not None:
             # All requests should be cached: https://operations.osmfoundation.org/policies/nominatim/
             js = self.mdb.osm_cache_resolve(float(lat), float(lon))
+            if js is not None:
+                import haversine
+                dist = haversine.haversine((float(lat), float(lon)), (float(js["lat"]), float(js["lon"])))
+                if dist < 2:
+                    print("cache hit")
+                    return js
+                else:
+                    print(f"cache hit but to far away!")
 
-            # Cache miss
+            # Cache miss and not close enough
             retry = 0
             while js is None and retry < 4:
                 # Documentation https://nominatim.org/release-docs/develop/api/Reverse/
@@ -441,12 +453,14 @@ class OSMResolver:
                 if r.status_code == 200:
                     js = r.json()
                     self.mdb.add_osm(js)
+                    return js
                 else:
                     print(
                         f"Error while accessing: retcode={r.status_code}, for {r.request} "
                     )
 
                 retry += 1
+                time.sleep(2)
 
             return js
 
@@ -923,8 +937,11 @@ class PhotoWoylie:
             for h in "0123456789abcdef":
                 path = self.base_path / Folders.HASH_LIB.value / h
                 for p in path.iterdir():
-                    self._rebuild_file(p, exiftool=exiftool, trace=rebuild_trace)
-                    count_rebuild += 1
+                    if not self._ignore_file(p.name):
+                        self._rebuild_file(p, exiftool=exiftool, trace=rebuild_trace)
+                        count_rebuild += 1
+                    else:
+                        print(f"File ignored: {p}")
         except Exception as e:
             print("Error while rebuilding")
             raise
