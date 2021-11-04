@@ -435,10 +435,10 @@ class OSMResolver:
                 import haversine
                 dist = haversine.haversine((float(lat), float(lon)), (float(js["lat"]), float(js["lon"])))
                 if dist < 2:
-                    print("cache hit")
+                    print(f"cache hit dist={dist}")
                     return js
                 else:
-                    print(f"cache hit but to far away!")
+                    print(f"cache hit but to far away! dist={dist}")
 
             # Cache miss and not close enough
             retry = 0
