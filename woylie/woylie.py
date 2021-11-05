@@ -433,12 +433,19 @@ class OSMResolver:
             js = self.mdb.osm_cache_resolve(float(lat), float(lon))
             if js is not None:
                 import haversine
-                dist = haversine.haversine((float(lat), float(lon)), (float(js["lat"]), float(js["lon"])))
+
+                dist = haversine.haversine(
+                    (float(lat), float(lon)), (float(js["lat"]), float(js["lon"]))
+                )
                 if dist < 2:
-                    print(f"cache hit dist={dist}")
+                    print(
+                        f"cache hit dist={dist}, lat lon: ({lat},{lon}) ({js['lat'],js['lon']})"
+                    )
                     return js
                 else:
-                    print(f"cache hit but to far away! dist={dist}")
+                    print(
+                        f"cache hit but to far away! dist={dist}, lat,lon: ({lat},{lon}) ({js['lat'],js['lon']})"
+                    )
 
             # Cache miss and not close enough
             retry = 0
