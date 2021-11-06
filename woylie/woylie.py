@@ -33,6 +33,7 @@ import datetime
 import json
 import shutil
 import time
+import haversine
 
 import sqlite_utils
 import requests
@@ -230,19 +231,28 @@ class MetadataBase:
             [js], pk=Columns.OSM_PLACE_ID.value, alter=True, upsert=True
         )
 
-    def osm_cache_resolve(self, lat, lon):
+    def osm_cache_resolve(self, lat: float, lon: float):
         if Tables.OSM_CACHE.value not in self.db.table_names():
             return None
 
         self._check_index(self.Index.OSM_BOUNDING_BOX)
 
+        best = dict()
+        best_dist = 50000
         for x in self.db[Tables.OSM_CACHE.value].rows_where(
             f"{lat} > b0 AND {lat} < b1 AND {lon} > b2 AND {lon} < b3"
         ):
-            if "address" in x:
-                temp = json.loads(x["address"])
-                x["address"] = temp
-            return x
+            dist = haversine.haversine(
+                (float(lat), float(lon)), (float(x["lat"]), float(x["lon"]))
+            )
+            if dist < best_dist:
+                best = x
+                best_dist = dist
+
+        if "address" in best:
+            temp = json.loads(x["address"])
+            best["address"] = temp
+        return best
 
     def add_origin_data(self, d: dict):
         self.db[Tables.FILES.value].insert_all(
