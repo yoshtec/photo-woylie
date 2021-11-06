@@ -245,7 +245,7 @@ class MetadataBase:
 
         self._check_index(self.Index.OSM_BOUNDING_BOX)
 
-        best = dict()
+        best = None
         best_dist = 500000
         for x in self.db[Tables.OSM_CACHE.value].rows_where(
             f"{lat} > b0 AND {lat} < b1 AND {lon} > b2 AND {lon} < b3"
@@ -257,9 +257,10 @@ class MetadataBase:
                 best = x
                 best_dist = dist
 
-        if "address" in best:
+        if best is not None and "address" in best:
             temp = json.loads(best["address"])
             best["address"] = temp
+
         return best
 
     def add_origin_data(self, d: dict):
