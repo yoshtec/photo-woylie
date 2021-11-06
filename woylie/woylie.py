@@ -148,6 +148,11 @@ class Columns(enum.Enum):
     ORIGIN_FILE = "origin_file"
     OSM_PLACE_ID = "place_id"
 
+def noop_trace(*args):
+    """
+    trace function that does nothing
+    """
+    pass
 
 def hash_file(filename):
     """
@@ -426,10 +431,11 @@ class OSMResolver:
     URL = "https://nominatim.openstreetmap.org/reverse"
     HEADERS = {"user-agent": "photo-woylie"}
 
-    def __init__(self, mdb: MetadataBase, lang=None):
+    def __init__(self, mdb: MetadataBase, lang=None, trace=noop_trace):
         self.lang = lang
         self.mdb = mdb
         self.print_osm_info()
+        self.trace = noop_trace
 
     @staticmethod
     def print_osm_info():
@@ -442,8 +448,6 @@ class OSMResolver:
             # All requests should be cached: https://operations.osmfoundation.org/policies/nominatim/
             js = self.mdb.osm_cache_resolve(float(lat), float(lon))
             if js is not None:
-                import haversine
-
                 dist = haversine.haversine(
                     (float(lat), float(lon)), (float(js["lat"]), float(js["lon"]))
                 )
@@ -456,6 +460,7 @@ class OSMResolver:
                     print(
                         f"cache hit but to far away! dist={dist}, lat,lon: ({lat},{lon}) ({js['lat'],js['lon']})"
                     )
+                    js = None
 
             # Cache miss and not close enough
             retry = 0
