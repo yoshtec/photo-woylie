@@ -232,9 +232,12 @@ class MetadataBase:
             js["b2"] = float(js[bb][2])
             js["b3"] = float(js[bb][3])
 
-        self.db[Tables.OSM_CACHE.value].insert_all(
-            [js], pk=Columns.OSM_PLACE_ID.value, alter=True, upsert=True
-        )
+        if Columns.OSM_PLACE_ID.value in js:
+            self.db[Tables.OSM_CACHE.value].insert_all(
+                [js], pk=Columns.OSM_PLACE_ID.value, alter=True, upsert=True
+            )
+        else:
+            print("found strange OSM item:", js)
 
     def osm_cache_resolve(self, lat: float, lon: float):
         if Tables.OSM_CACHE.value not in self.db.table_names():
