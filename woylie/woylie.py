@@ -148,11 +148,13 @@ class Columns(enum.Enum):
     ORIGIN_FILE = "origin_file"
     OSM_PLACE_ID = "place_id"
 
+
 def noop_trace(*args):
     """
     trace function that does nothing
     """
     pass
+
 
 def hash_file(filename):
     """
@@ -493,7 +495,7 @@ class OSMResolver:
     def resolve_name(self, lat, lon):
         osmjs = self.resolve(lat, lon)
 
-        if not osmjs:
+        if not osmjs or "error" in osmjs:
             print(f"🗺️  Result for OpenStreetMap: lat={lat}, lon={lon}")
             print(f"🗺️  Query result: {osmjs}")
             return Path("_Unknown") / Path(f"_lat_{lat}_lon_{lon}")
