@@ -229,7 +229,11 @@ def fileinfo(base_path, file):
     """ display information about the file"""
     woylie = PhotoWoylie(base_path=base_path)
     for f in file:
-        woylie.file_info(file=Path(f))
+        fi = Path(f)
+        if fi.exists():
+            woylie.file_info(file=fi)
+        else:
+            click.echo(f"Could not find File: {fi}")
 
 
 if "__main__" == __name__:

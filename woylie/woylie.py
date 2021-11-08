@@ -458,14 +458,8 @@ class OSMResolver:
                     (float(lat), float(lon)), (float(js["lat"]), float(js["lon"]))
                 )
                 if dist < 2:
-                    print(
-                        f"cache hit dist={dist}, lat lon: ({lat},{lon}) ({js['lat'],js['lon']})"
-                    )
                     return js
                 else:
-                    print(
-                        f"cache hit but to far away! dist={dist}, lat,lon: ({lat},{lon}) ({js['lat'],js['lon']})"
-                    )
                     js = None
 
             # Cache miss and not close enough
@@ -525,6 +519,9 @@ class OSMResolver:
                 return path / Path(f"_lat_{lat}_lon_{lon}")
         elif "display_name" in osmjs:
             return Path(osmjs["display_name"])
+
+        # Fallback to return path of lat lon
+        return Path("_Unknown") / Path(f"_lat_{lat}_lon_{lon}")
 
 
 class FileImporter:
