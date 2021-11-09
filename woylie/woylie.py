@@ -204,9 +204,7 @@ class MetadataBase:
     class Index(enum.Enum):
         EXIF_UTC_TIME = f"CREATE INDEX exif_utc_time ON {Tables.EXIF.value} ({Columns.UTC_TIME.value});"
         OSM_BOUNDING_BOX = f"CREATE INDEX osm_bounding_box ON {Tables.OSM_CACHE.value} (b0, b1, b2, b3);"
-        EXIF_HASH_FILE = (
-            f"CREATE UNIQUE INDEX exif_hash_file ON {Tables.EXIF.value} ({Columns.HASH.value});"
-        )
+        EXIF_HASH_FILE = f"CREATE UNIQUE INDEX exif_hash_file ON {Tables.EXIF.value} ({Columns.HASH.value});"
 
     def __init__(self, path: Path):
         self.db = sqlite_utils.Database(path)
@@ -316,12 +314,16 @@ class MetadataBase:
     def get_empty_gps_files(self):
         if Tables.EXIF.value in self.db.table_names():
             sql = ""  # TODO infer only for non fixed
-            return self.db[Tables.EXIF.value].rows_where(f"{Columns.GPS_POSITION.value} is null")
+            return self.db[Tables.EXIF.value].rows_where(
+                f"{Columns.GPS_POSITION.value} is null"
+            )
 
     def calculate_nearest(self):
         if Tables.EXIF.value in self.db.table_names():
             self._check_index(self.Index.EXIF_UTC_TIME)
-            for row in self.db[Tables.EXIF.value].rows_where(f"{Columns.GPS_POSITION.value} is null"):
+            for row in self.db[Tables.EXIF.value].rows_where(
+                f"{Columns.GPS_POSITION.value} is null"
+            ):
                 self.calculate_nearest_for(row)
 
     def calculate_nearest_for(self, exif):
