@@ -7,7 +7,7 @@ from time import strptime
 
 UTC = datetime.timezone(datetime.timedelta(0), name="UTC")
 
-TIMESTR = "%Y:%m:%d %H:%M:%S"
+TIME_PATTERN = "%Y:%m:%d %H:%M:%S"
 
 
 class ExifDateTimeType:
@@ -61,10 +61,9 @@ class TimeKeeper:
         if etype.better(self.edt) and date_time_str is not None and date_time_str != "":
             try:
                 self.edt = etype
-                dt = None
 
                 # Prepare for eventualities
-                time_format = TIMESTR
+                time_format = TIME_PATTERN
                 if "." in date_time_str:
                     time_format = time_format + ".%f"
                 if "Z" in date_time_str:
@@ -115,7 +114,3 @@ class TimeKeeper:
 
     def __str__(self):
         return self.as_iso_time()
-
-    @classmethod
-    def check(cls, candidate_datetime: str) -> bool:
-        return False

@@ -147,6 +147,9 @@ class Columns(enum.Enum):
     UTC_TIME = "utc_time"
     ORIGIN_FILE = "origin_file"
     OSM_PLACE_ID = "place_id"
+    GPS_POSITION = "GPSPosition"
+    GPS_LAT = "GPSLatitude"
+    GPS_LON = "GPSLongitude"
 
 
 def noop_trace(*args):
@@ -199,10 +202,10 @@ class MetadataBase:
     """
 
     class Index(enum.Enum):
-        EXIF_UTC_TIME = f"CREATE INDEX exif_utc_time ON {Tables.EXIF.value} (utc_time);"
+        EXIF_UTC_TIME = f"CREATE INDEX exif_utc_time ON {Tables.EXIF.value} ({Columns.UTC_TIME.value});"
         OSM_BOUNDING_BOX = f"CREATE INDEX osm_bounding_box ON {Tables.OSM_CACHE.value} (b0, b1, b2, b3);"
         EXIF_HASH_FILE = (
-            f"CREATE UNIQUE INDEX exif_hash_file ON {Tables.EXIF.value} (file_hash);"
+            f"CREATE UNIQUE INDEX exif_hash_file ON {Tables.EXIF.value} ({Columns.HASH.value});"
         )
 
     def __init__(self, path: Path):
@@ -313,12 +316,12 @@ class MetadataBase:
     def get_empty_gps_files(self):
         if Tables.EXIF.value in self.db.table_names():
             sql = ""  # TODO infer only for non fixed
-            return self.db[Tables.EXIF.value].rows_where("GPSPosition is null")
+            return self.db[Tables.EXIF.value].rows_where(f"{Columns.GPS_POSITION.value} is null")
 
     def calculate_nearest(self):
         if Tables.EXIF.value in self.db.table_names():
             self._check_index(self.Index.EXIF_UTC_TIME)
-            for row in self.db[Tables.EXIF.value].rows_where("GPSPosition is null"):
+            for row in self.db[Tables.EXIF.value].rows_where(f"{Columns.GPS_POSITION.value} is null"):
                 self.calculate_nearest_for(row)
 
     def calculate_nearest_for(self, exif):
@@ -328,9 +331,9 @@ class MetadataBase:
         sql = (
             "select "
             f" min(abs(strftime('%s','{exif[Columns.UTC_TIME.value]}') "
-            f" - strftime('%s', {Columns.UTC_TIME.value}))) as delta_sec,"
-            f" file_hash, GPSPosition, GPSLatitude, GPSLongitude, {Columns.UTC_TIME.value}"
-            f" from {Tables.EXIF.value} where GPSPosition not NULL;"
+            f"  - strftime('%s', {Columns.UTC_TIME.value}))) as delta_sec,"
+            f" {Columns.HASH.value}, {Columns.GPS_POSITION.value}, GPSLatitude, GPSLongitude, {Columns.UTC_TIME.value}"
+            f" from {Tables.EXIF.value} where {Columns.GPS_POSITION.value} not NULL;"
         )
 
         for res in self.db.execute(sql=sql):
@@ -340,9 +343,9 @@ class MetadataBase:
                 Columns.HASH.value + "_origin": res[1],
                 Columns.UTC_TIME.value + "_origin": res[5],
                 "delta": res[0],
-                "GPSPosition": res[2],
-                "GPSLatitude": res[3],
-                "GPSLongitude": res[4],
+                Columns.GPS_POSITION.value: res[2],
+                Columns.GPS_LAT.value: res[3],
+                Columns.GPS_LON.value: res[4],
             }
 
             self.db[Tables.DERIVED_GPS.value].insert_all(
