@@ -182,7 +182,7 @@ def check_call(args, ignore_return_code=False):
     """
 
     cmd_str = " ".join(args)
-    logging.info("Execute command: '%s' ", cmd_str)
+    logging.info(f"Execute command: '{cmd_str}' ")
     p = subprocess.Popen(
         args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
     )
@@ -192,7 +192,7 @@ def check_call(args, ignore_return_code=False):
     if stderr:
         logging.debug(stderr)
     if not ignore_return_code and p.returncode != 0:
-        raise RuntimeError("failed to run '%s'" % cmd_str)
+        raise RuntimeError(f"failed to run '{cmd_str}'")
     return stdout
 
 
