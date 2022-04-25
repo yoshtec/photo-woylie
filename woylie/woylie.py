@@ -731,7 +731,7 @@ class FileImporter:
 
     def link_camera(self):
 
-        name = self._get_camera_name()
+        name = str(self._get_camera_name())
         if name != "":
             self._link(
                 self.base_path
