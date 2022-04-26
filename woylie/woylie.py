@@ -85,6 +85,7 @@ IGNORE_PATH = [
     ".idea",
     ".gradle",
     ".cache",
+    "Thumbnails",
 ]
 IGNORE_FILE_PATTERN = ["._*"]
 
@@ -591,20 +592,21 @@ class FileImporter:
                 print("WARN: Windows Support currently not implemented")
                 return ["copy"]  # Windows Use Junctions or Links?
             else:
-                return ["cp", "--reflink=auto"]
+                return ["cp"] if retry else ["cp", "--reflink=always"]
 
         if not any(self.full_path.parent.glob(self.file_hash + ".*")):
             try:
                 check_call(
                     get_copy_cmd() + [str(self.old_file_path), str(self.full_path)]
                 )
+                self.flags.append("#️⃣")
             except RuntimeError as e:
                 check_call(
                     get_copy_cmd(retry=True)
                     + [str(self.old_file_path), str(self.full_path)]
                 )
+                self.flags.append("#")
 
-        self.flags.append("#")
         self._load_exif()
 
         self.imported = True
