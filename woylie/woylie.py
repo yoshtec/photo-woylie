@@ -724,14 +724,14 @@ class FileImporter:
         if "UserComment" in self.exif and self.exif["UserComment"] == "Screenshot":
             name = "Screenshot"
         if "Make" in self.exif:
-            name = self.exif["Make"]
+            name = str(self.exif["Make"])
         if "Model" in self.exif:
-            name += " " + self.exif["Model"]
+            name += " " + str(self.exif["Model"])
         return name
 
     def link_camera(self):
 
-        name = str(self._get_camera_name())
+        name = self._get_camera_name()
         if name != "":
             self._link(
                 self.base_path
